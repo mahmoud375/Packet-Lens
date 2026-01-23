@@ -1,0 +1,55 @@
+# ===========================
+# Python & Environment
+# ===========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ===========================
+# IDE Settings (VS Code / PyCharm)
+# ===========================
+.vscode/
+.idea/
+*.swp
+
+# ===========================
+# OS Generated Files
+# ===========================
+.DS_Store
+Thumbs.db
+
+# ===========================
+# PACKETLENS DATA (Critical)
+# ===========================
+
+# 1. Ignore Raw Data (GBs size)
+data/raw/
+
+# 2. Ignore Large Training Sets (>100MB Limit on GitHub)
+# These files are too big for standard Git.
+data/processed/X_train.parquet
+data/processed/X_test.parquet
+
+# Note: We keep y_train/y_test because they are small (<3MB)
+# We also keep all .json and .pkl artifacts because the system needs them.
