@@ -53,3 +53,5 @@ data/processed/X_test.parquet
 
 # Note: We keep y_train/y_test because they are small (<3MB)
 # We also keep all .json and .pkl artifacts because the system needs them.
+
+.agent/

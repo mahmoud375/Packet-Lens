@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package packetlens;
+
+option go_package = "github.com/mahmoud/packetlens/gen/go/packetlens";
+
+// FeatureVector represents extracted network flow features from the Go sniffer.
+// Sent from Go Sniffer → Python Inference Service.
+message FeatureVector {
+  // Unique identifier for the network flow (e.g., 5-tuple hash)
+  string flow_id = 1;
+  
+  // Pre-computed feature values matching feature_map.json order
+  repeated float features = 2;
+  
+  // Capture timestamp in nanoseconds since epoch
+  int64 timestamp_ns = 3;
+}
+
+// Verdict represents the ML model's classification result.
+// Sent from Python Inference Service → Go Sniffer.
+message Verdict {
+  // Flow identifier matching the input FeatureVector
+  string flow_id = 1;
+  
+  // Predicted attack label (e.g., "BENIGN", "DDoS", "PortScan")
+  string label = 2;
+  
+  // Model confidence score [0.0, 1.0]
+  float confidence = 3;
+  
+  // Inference latency in microseconds
+  int64 inference_time_us = 4;
+}
+
+// InferenceService provides real-time network intrusion detection.
+// Uses bidirectional streaming for high-throughput, low-latency inference.
+service InferenceService {
+  // Classify opens a bidirectional stream where:
+  // - Client (Go Sniffer) sends FeatureVector messages
+  // - Server (Python) responds with Verdict messages
+  // This allows continuous inference without connection overhead.
+  rpc Classify(stream FeatureVector) returns (stream Verdict);
+}
