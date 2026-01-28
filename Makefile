@@ -37,6 +37,8 @@ proto-python:
 		--pyi_out=services/inference/proto \
 		--grpc_python_out=services/inference/proto \
 		proto/packetlens.proto
+	@# Fix absolute imports to relative imports for package compatibility
+	@sed -i 's/^import packetlens_pb2/from . import packetlens_pb2/' services/inference/proto/packetlens_pb2_grpc.py
 	@touch services/inference/proto/__init__.py
 	@echo "✓ Python stubs generated in services/inference/proto/"
 

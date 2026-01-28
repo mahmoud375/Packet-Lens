@@ -1,0 +1,13 @@
+# PacketLens Inference Service Dependencies
+# Strict versions per tech-stack.md
+
+# gRPC
+grpcio>=1.60.0
+grpcio-tools>=1.60.0
+
+# ML Inference (ONNX only - no sklearn/torch in production)
+onnxruntime>=1.17.0
+numpy>=1.24.0
+
+# Config loading ONLY - never use in inference loop
+pandas>=2.0.0
