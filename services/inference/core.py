@@ -1,178 +1,266 @@
 """
-PacketLens Model Engine
-=======================
+PacketLens Inference Engine - Core Module
+==========================================
 
-Core inference engine that loads artifacts and performs predictions.
-Follows tech-stack.md rules: NumPy arrays only, no pandas in inference loop.
+This module implements the ONNX-based inference engine for network
+intrusion detection. It is designed for high-throughput, low-latency
+prediction in a production gRPC service.
+
+Architecture Decisions:
+-----------------------
+1. ONNX Runtime: Provides 2-5x faster inference than native XGBoost
+   and enables deployment without XGBoost dependencies.
+
+2. Session Persistence: The ONNX session is loaded ONCE at init and
+   reused for all predictions. This avoids the ~100ms model load
+   overhead per request.
+
+3. NumPy-Only Interface: The predict() method accepts raw numpy arrays,
+   avoiding pandas overhead in the hot path (~10µs per DataFrame creation).
+
+4. Thread Safety: ONNX Runtime sessions are thread-safe for inference.
+   Multiple concurrent calls to predict() are safe.
+
+Author: PacketLens ML Team
 """
+
+from __future__ import annotations
 
 import json
 import logging
-import pickle
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Tuple
 
 import numpy as np
+import onnxruntime as ort
 
+# Configure module logger
 logger = logging.getLogger(__name__)
 
 
-class ModelEngine:
+class InferenceEngine:
     """
-    High-performance inference engine for network intrusion detection.
+    High-performance ONNX inference engine for network intrusion detection.
     
-    Loads artifacts from data/processed/ at startup:
-    - scaler.pkl: StandardScaler for feature normalization
-    - feature_map.json: Feature name → index mapping
-    - label_mapping.json: Model output index → attack label
-    - model.onnx: ONNX model for inference
+    This class manages the ONNX session and model artifacts, providing
+    a simple predict() interface for the gRPC service layer.
     
-    Supports Mock Mode when model.onnx is missing for connectivity testing.
+    Attributes:
+        session: ONNX Runtime InferenceSession (loaded once, reused)
+        label_mapping: Dict mapping class indices to human-readable labels
+        feature_map: List of expected feature names (for validation)
+        input_name: Name of the ONNX model's input tensor
+        n_features: Expected number of input features
+        n_classes: Number of output classes
     """
     
-    def __init__(self, data_dir: Path, mock_mode: bool = False):
+    # Default paths (relative to project root)
+    DEFAULT_MODEL_PATH = Path("services/inference/model_store/model.onnx")
+    DEFAULT_LABEL_MAPPING_PATH = Path("data/processed/label_mapping.json")
+    DEFAULT_FEATURE_MAP_PATH = Path("data/processed/feature_map.json")
+    
+    def __init__(
+        self,
+        model_path: Path | None = None,
+        label_mapping_path: Path | None = None,
+        feature_map_path: Path | None = None,
+    ) -> None:
         """
-        Initialize the ModelEngine.
+        Initialize the inference engine by loading model and artifacts.
         
         Args:
-            data_dir: Path to data/processed/ directory
-            mock_mode: If True, use dummy predictor when model is missing
-        """
-        self.data_dir = data_dir
-        self.mock_mode = mock_mode
-        self._onnx_session: Optional[object] = None
-        self._scaler: Optional[object] = None
-        self._feature_map: dict = {}
-        self._label_mapping: dict = {}
-        self._is_mock: bool = False
-        
-    def load(self) -> None:
-        """
-        Load all artifacts. Must be called before predict().
-        
+            model_path: Path to ONNX model file
+            label_mapping_path: Path to label_mapping.json
+            feature_map_path: Path to feature_map.json
+            
         Raises:
-            FileNotFoundError: If required artifacts are missing (non-mock mode)
-            RuntimeError: If artifacts are corrupted
+            FileNotFoundError: If any required file is missing
+            ValueError: If feature count doesn't match ONNX input shape
         """
-        logger.info(f"Loading artifacts from {self.data_dir}")
+        # Use defaults if not provided
+        model_path = model_path or self.DEFAULT_MODEL_PATH
+        label_mapping_path = label_mapping_path or self.DEFAULT_LABEL_MAPPING_PATH
+        feature_map_path = feature_map_path or self.DEFAULT_FEATURE_MAP_PATH
         
-        # 1. Load scaler (required)
-        scaler_path = self.data_dir / "scaler.pkl"
-        if scaler_path.exists():
-            try:
-                with open(scaler_path, "rb") as f:
-                    self._scaler = pickle.load(f)
-                logger.info("✓ Loaded scaler.pkl")
-            except Exception as e:
-                if not self.mock_mode:
-                    raise RuntimeError(f"Failed to load scaler.pkl: {e}")
-                logger.warning(f"⚠ scaler.pkl corrupted ({e}) - using identity transform")
-                self._scaler = None
-        else:
-            if not self.mock_mode:
-                raise FileNotFoundError(f"Required artifact missing: {scaler_path}")
-            logger.warning("⚠ scaler.pkl not found - using identity transform")
-            self._scaler = None
+        logger.info(f"Initializing InferenceEngine...")
+        logger.info(f"  Model: {model_path}")
+        logger.info(f"  Labels: {label_mapping_path}")
+        logger.info(f"  Features: {feature_map_path}")
         
-        # 2. Load feature map (required)
-        feature_map_path = self.data_dir / "feature_map.json"
-        if feature_map_path.exists():
-            with open(feature_map_path, "r") as f:
-                self._feature_map = json.load(f)
-            logger.info(f"✓ Loaded feature_map.json ({len(self._feature_map)} features)")
-        else:
-            if not self.mock_mode:
-                raise FileNotFoundError(f"Required artifact missing: {feature_map_path}")
-            logger.warning("⚠ feature_map.json not found - using empty map")
-            self._feature_map = {}
+        # =====================================================================
+        # STEP 1: Load ONNX Model
+        # =====================================================================
+        # Session options for production performance
+        sess_options = ort.SessionOptions()
+        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        sess_options.intra_op_num_threads = 4  # Parallel ops within a single inference
+        sess_options.inter_op_num_threads = 1  # Sequential between ops (simpler)
         
-        # 3. Load label mapping (required)
-        label_map_path = self.data_dir / "label_mapping.json"
-        if label_map_path.exists():
-            with open(label_map_path, "r") as f:
-                self._label_mapping = json.load(f)
-            logger.info(f"✓ Loaded label_mapping.json ({len(self._label_mapping)} labels)")
-        else:
-            if not self.mock_mode:
-                raise FileNotFoundError(f"Required artifact missing: {label_map_path}")
-            logger.warning("⚠ label_mapping.json not found - using default labels")
-            self._label_mapping = {"0": "BENIGN", "1": "ATTACK"}
+        # Prefer CPU execution provider (most portable)
+        # Can add CUDAExecutionProvider for GPU if available
+        providers = ["CPUExecutionProvider"]
         
-        # 4. Load ONNX model (optional in mock mode)
-        model_path = self.data_dir / "model.onnx"
-        if model_path.exists():
-            import onnxruntime as ort
-            self._onnx_session = ort.InferenceSession(
-                str(model_path),
-                providers=["CPUExecutionProvider"]
+        self.session = ort.InferenceSession(
+            str(model_path),
+            sess_options=sess_options,
+            providers=providers,
+        )
+        
+        # Extract input/output metadata
+        self.input_name = self.session.get_inputs()[0].name
+        input_shape = self.session.get_inputs()[0].shape
+        self.n_features = input_shape[1]  # [batch, features]
+        
+        output_shape = self.session.get_outputs()[1].shape  # probabilities output
+        self.n_classes = output_shape[1] if len(output_shape) > 1 else 33
+        
+        logger.info(f"  ONNX loaded: input={self.input_name}, shape={input_shape}")
+        
+        # =====================================================================
+        # STEP 2: Load Label Mapping
+        # =====================================================================
+        with open(label_mapping_path, "r") as f:
+            label_data = json.load(f)
+        
+        # The mapping is stored as {index: label_name}
+        # Handle both string and int keys
+        int_to_label = label_data.get("int_to_label", {})
+        self.label_mapping: dict[int, str] = {
+            int(k): v for k, v in int_to_label.items()
+        }
+        
+        logger.info(f"  Labels: {len(self.label_mapping)} classes")
+        
+        # =====================================================================
+        # STEP 3: Load Feature Map
+        # =====================================================================
+        with open(feature_map_path, "r") as f:
+            feature_data = json.load(f)
+        
+        self.feature_map: list[str] = feature_data.get("features", [])
+        
+        # =====================================================================
+        # STEP 4: Validate Feature Count
+        # =====================================================================
+        # CRITICAL: Ensure feature count matches ONNX input shape
+        # This catches preprocessing/model version mismatches at startup
+        if len(self.feature_map) != self.n_features:
+            raise ValueError(
+                f"Feature count mismatch! "
+                f"feature_map.json has {len(self.feature_map)} features, "
+                f"but ONNX model expects {self.n_features}. "
+                f"Regenerate artifacts or retrain model."
             )
-            logger.info("✓ Loaded model.onnx")
-            self._is_mock = False
-        else:
-            if not self.mock_mode:
-                raise FileNotFoundError(f"Required artifact missing: {model_path}")
-            logger.warning("⚠ model.onnx not found - RUNNING IN MOCK MODE")
-            self._is_mock = True
         
-        logger.info(f"ModelEngine ready (mock={self._is_mock})")
+        logger.info(f"  Features: {len(self.feature_map)} (validated against ONNX)")
+        logger.info("InferenceEngine initialized successfully ✓")
     
-    @property
-    def expected_feature_count(self) -> int:
-        """Number of features expected by the model."""
-        return len(self._feature_map) if self._feature_map else 78  # Default CIC-IDS2017
-    
-    @property
-    def is_mock(self) -> bool:
-        """True if running in mock mode with dummy predictor."""
-        return self._is_mock
-    
-    def predict(self, features: np.ndarray) -> tuple[str, float, int]:
+    def predict(self, features: np.ndarray) -> Tuple[str, float, float]:
         """
-        Perform inference on a feature vector.
+        Run inference on a single feature vector.
+        
+        This method is designed for maximum throughput:
+        - No DataFrame creation (numpy only)
+        - No model reloading
+        - Minimal memory allocation
         
         Args:
-            features: 1D numpy array of float32 features
+            features: Float32 numpy array of shape (n_features,) or (1, n_features)
             
         Returns:
-            Tuple of (label, confidence, inference_time_us)
-            
-        Note:
-            Uses NumPy arrays directly - no pandas DataFrames per tech-stack.md
+            Tuple of:
+                - label: Human-readable class name (e.g., "DDoS-HOIC")
+                - confidence: Softmax probability [0.0, 1.0]
+                - inference_time_ms: Time spent in ONNX inference
+                
+        Raises:
+            ValueError: If feature count doesn't match expected
         """
-        start_us = time.perf_counter_ns() // 1000
+        start_time = time.perf_counter()
         
-        # Ensure correct shape and type
+        # =====================================================================
+        # INPUT VALIDATION & RESHAPING
+        # =====================================================================
+        # Ensure correct shape: [1, n_features] for single sample batch
         if features.ndim == 1:
             features = features.reshape(1, -1)
-        features = features.astype(np.float32)
         
-        # Apply scaler if available
-        if self._scaler is not None:
-            features = self._scaler.transform(features)
+        # Validate feature count
+        if features.shape[1] != self.n_features:
+            raise ValueError(
+                f"Feature count mismatch: got {features.shape[1]}, "
+                f"expected {self.n_features}"
+            )
         
-        if self._is_mock:
-            # Mock prediction for connectivity testing
-            label = "BENIGN"
-            confidence = 0.95
-        else:
-            # Real ONNX inference
-            input_name = self._onnx_session.get_inputs()[0].name
-            outputs = self._onnx_session.run(None, {input_name: features})
-            
-            # Get prediction and confidence
-            logits = outputs[0][0]
-            pred_idx = int(np.argmax(logits))
-            confidence = float(np.max(self._softmax(logits)))
-            label = self._label_mapping.get(str(pred_idx), f"UNKNOWN_{pred_idx}")
+        # Ensure float32 (ONNX requirement)
+        if features.dtype != np.float32:
+            features = features.astype(np.float32)
         
-        end_us = time.perf_counter_ns() // 1000
-        inference_time_us = end_us - start_us
+        # =====================================================================
+        # ONNX INFERENCE
+        # =====================================================================
+        # Run inference - returns [labels, probabilities]
+        outputs = self.session.run(None, {self.input_name: features})
         
-        return label, confidence, inference_time_us
+        # outputs[0] = labels (int64), outputs[1] = probabilities (float32)
+        # For softprob objective, probabilities has shape [batch, n_classes]
+        probabilities = outputs[1][0]  # First (only) sample
+        
+        # Get predicted class and confidence
+        pred_idx = int(np.argmax(probabilities))
+        confidence = float(probabilities[pred_idx])
+        
+        # Map index to human-readable label
+        label = self.label_mapping.get(pred_idx, f"UNKNOWN_{pred_idx}")
+        
+        # Calculate inference time
+        inference_time_ms = (time.perf_counter() - start_time) * 1000
+        
+        return label, confidence, inference_time_ms
     
-    @staticmethod
-    def _softmax(x: np.ndarray) -> np.ndarray:
-        """Compute softmax probabilities."""
-        exp_x = np.exp(x - np.max(x))
-        return exp_x / exp_x.sum()
+    def predict_batch(
+        self, features: np.ndarray
+    ) -> list[Tuple[str, float]]:
+        """
+        Run inference on a batch of feature vectors.
+        
+        More efficient than calling predict() in a loop due to
+        ONNX Runtime's internal batching optimizations.
+        
+        Args:
+            features: Float32 numpy array of shape (batch_size, n_features)
+            
+        Returns:
+            List of (label, confidence) tuples
+        """
+        # Ensure correct dtype
+        if features.dtype != np.float32:
+            features = features.astype(np.float32)
+        
+        # Run batched inference
+        outputs = self.session.run(None, {self.input_name: features})
+        probabilities = outputs[1]  # Shape: [batch, n_classes]
+        
+        # Process each sample
+        results = []
+        for probs in probabilities:
+            pred_idx = int(np.argmax(probs))
+            confidence = float(probs[pred_idx])
+            label = self.label_mapping.get(pred_idx, f"UNKNOWN_{pred_idx}")
+            results.append((label, confidence))
+        
+        return results
+    
+    @property
+    def expected_features(self) -> int:
+        """Number of features expected by the model."""
+        return self.n_features
+    
+    @property
+    def class_labels(self) -> list[str]:
+        """List of all class labels in order."""
+        return [
+            self.label_mapping.get(i, f"UNKNOWN_{i}")
+            for i in range(self.n_classes)
+        ]

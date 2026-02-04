@@ -1,11 +1,11 @@
 # PacketLens Inference Service
 # Import core components for convenient access
 
-from .core import ModelEngine
-from .server import InferenceServiceImpl, create_server
+from .core import InferenceEngine
+from .server import InferenceService, serve
 
 __all__ = [
-    "ModelEngine",
-    "InferenceServiceImpl",
-    "create_server",
+    "InferenceEngine",
+    "InferenceService",
+    "serve",
 ]
