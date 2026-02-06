@@ -178,7 +178,7 @@ const file_packetlens_proto_rawDesc = "" +
 	"confidence\x12*\n" +
 	"\x11inference_time_us\x18\x04 \x01(\x03R\x0finferenceTimeUs2R\n" +
 	"\x10InferenceService\x12>\n" +
-	"\bClassify\x12\x19.packetlens.FeatureVector\x1a\x13.packetlens.Verdict(\x010\x01B1Z/github.com/mahmoud/packetlens/gen/go/packetlensb\x06proto3"
+	"\bClassify\x12\x19.packetlens.FeatureVector\x1a\x13.packetlens.Verdict(\x010\x01B4Z2github.com/mahmoud375/PacketLens/gen/go/packetlensb\x06proto3"
 
 var (
 	file_packetlens_proto_rawDescOnce sync.Once

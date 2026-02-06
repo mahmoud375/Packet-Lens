@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package packetlens;
 
-option go_package = "github.com/mahmoud/packetlens/gen/go/packetlens";
+option go_package = "github.com/mahmoud375/PacketLens/gen/go/packetlens";
 
 // FeatureVector represents extracted network flow features from the Go sniffer.
 // Sent from Go Sniffer → Python Inference Service.
