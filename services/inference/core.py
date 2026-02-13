@@ -21,6 +21,10 @@ Architecture Decisions:
 4. Thread Safety: ONNX Runtime sessions are thread-safe for inference.
    Multiple concurrent calls to predict() are safe.
 
+5. Feature Alignment: Production inference applies the SAME transforms
+   as training (log1p on heavy-tail features + RobustScaler) to ensure
+   the model sees data from the correct distribution.
+
 Author: PacketLens ML Team
 """
 
@@ -32,11 +36,38 @@ import time
 from pathlib import Path
 from typing import Tuple
 
+import joblib
 import numpy as np
 import onnxruntime as ort
 
 # Configure module logger
 logger = logging.getLogger(__name__)
+
+# =========================================================================
+# HEAVY-TAIL FEATURES (must match corrected_preprocessing.py exactly)
+# =========================================================================
+# These features follow Power-Law distributions and were log1p-transformed
+# during training. We must apply the same transform at inference time.
+HEAVY_TAIL_FEATURES = frozenset([
+    "flow_duration",
+    "flow_bytes/s",
+    "flow_packets/s",
+    "fwd_packets/s",
+    "bwd_packets/s",
+    "flow_iat_mean",
+    "flow_iat_std",
+    "flow_iat_max",
+    "fwd_iat_total",
+    "fwd_iat_mean",
+    "fwd_iat_std",
+    "fwd_iat_max",
+    "bwd_iat_total",
+    "bwd_iat_mean",
+    "bwd_iat_std",
+    "bwd_iat_max",
+    "bytes_rate",
+    "packets_rate",
+])
 
 
 class InferenceEngine:
@@ -53,18 +84,22 @@ class InferenceEngine:
         input_name: Name of the ONNX model's input tensor
         n_features: Expected number of input features
         n_classes: Number of output classes
+        scaler: RobustScaler loaded from training artifacts (or None)
+        _log1p_indices: Numpy array of feature indices requiring log1p
     """
     
     # Default paths (relative to project root)
     DEFAULT_MODEL_PATH = Path("services/inference/model_store/model.onnx")
     DEFAULT_LABEL_MAPPING_PATH = Path("data/processed/label_mapping.json")
     DEFAULT_FEATURE_MAP_PATH = Path("data/processed/feature_map.json")
+    DEFAULT_SCALER_PATH = Path("data/processed/scaler.pkl")
     
     def __init__(
         self,
         model_path: Path | None = None,
         label_mapping_path: Path | None = None,
         feature_map_path: Path | None = None,
+        scaler_path: Path | None = None,
     ) -> None:
         """
         Initialize the inference engine by loading model and artifacts.
@@ -73,6 +108,7 @@ class InferenceEngine:
             model_path: Path to ONNX model file
             label_mapping_path: Path to label_mapping.json
             feature_map_path: Path to feature_map.json
+            scaler_path: Path to scaler.pkl (optional, graceful fallback)
             
         Raises:
             FileNotFoundError: If any required file is missing
@@ -82,11 +118,13 @@ class InferenceEngine:
         model_path = model_path or self.DEFAULT_MODEL_PATH
         label_mapping_path = label_mapping_path or self.DEFAULT_LABEL_MAPPING_PATH
         feature_map_path = feature_map_path or self.DEFAULT_FEATURE_MAP_PATH
+        scaler_path = scaler_path or self.DEFAULT_SCALER_PATH
         
         logger.info(f"Initializing InferenceEngine...")
         logger.info(f"  Model: {model_path}")
         logger.info(f"  Labels: {label_mapping_path}")
         logger.info(f"  Features: {feature_map_path}")
+        logger.info(f"  Scaler: {scaler_path}")
         
         # =====================================================================
         # STEP 1: Load ONNX Model
@@ -154,7 +192,92 @@ class InferenceEngine:
             )
         
         logger.info(f"  Features: {len(self.feature_map)} (validated against ONNX)")
+        
+        # =====================================================================
+        # STEP 5: Build Log1p Index Mask (from feature_map + HEAVY_TAIL list)
+        # =====================================================================
+        # Pre-compute which feature indices need log1p at inference time.
+        # This avoids string lookups on every predict() call.
+        self._log1p_indices = np.array([
+            i for i, name in enumerate(self.feature_map)
+            if name in HEAVY_TAIL_FEATURES
+        ], dtype=np.intp)
+        
+        logger.info(
+            f"  Log1p mask: {len(self._log1p_indices)} of "
+            f"{len(self.feature_map)} features"
+        )
+        
+        # =====================================================================
+        # STEP 6: Load Scaler (Graceful Fallback)
+        # =====================================================================
+        # The scaler is critical for correct predictions but we allow
+        # running without it for local dev / debugging convenience.
+        self.scaler = None
+        try:
+            self.scaler = joblib.load(scaler_path)
+            scaler_type = type(self.scaler).__name__
+            logger.info(f"  Scaler loaded: {scaler_type} ✓")
+            
+            # Validate scaler feature count
+            # RobustScaler stores center_ (median) with shape (n_features,)
+            if hasattr(self.scaler, "center_"):
+                scaler_n = len(self.scaler.center_)
+            elif hasattr(self.scaler, "mean_"):
+                scaler_n = len(self.scaler.mean_)
+            else:
+                scaler_n = -1
+            
+            if scaler_n != -1 and scaler_n != self.n_features:
+                logger.error(
+                    f"  Scaler feature mismatch: scaler has {scaler_n}, "
+                    f"model expects {self.n_features}. Disabling scaler."
+                )
+                self.scaler = None
+        except FileNotFoundError:
+            logger.warning(
+                f"  Scaler not found at {scaler_path}. "
+                f"Running WITHOUT preprocessing transforms. "
+                f"Predictions may be inaccurate!"
+            )
+        except Exception as e:
+            logger.warning(
+                f"  Failed to load scaler: {e}. "
+                f"Running WITHOUT preprocessing transforms."
+            )
+        
         logger.info("InferenceEngine initialized successfully ✓")
+    
+    def _apply_preprocessing(self, features: np.ndarray) -> np.ndarray:
+        """
+        Apply the same transforms used during training.
+        
+        Pipeline (must match corrected_preprocessing.py):
+            1. Clip negatives to 0 for heavy-tail features
+            2. log1p() on heavy-tail features
+            3. RobustScaler.transform()
+        
+        Args:
+            features: Raw float32 array of shape (1, n_features)
+            
+        Returns:
+            Transformed float32 array of shape (1, n_features)
+        """
+        # Work on a copy to avoid mutating the caller's data
+        features = features.copy()
+        
+        # Step 1 & 2: log1p on heavy-tail features (clip negatives first)
+        if len(self._log1p_indices) > 0:
+            features[:, self._log1p_indices] = np.log1p(
+                np.clip(features[:, self._log1p_indices], 0, None)
+            )
+        
+        # Step 3: RobustScaler
+        if self.scaler is not None:
+            features = self.scaler.transform(features)
+        
+        # Ensure float32 after transform (scaler may output float64)
+        return features.astype(np.float32)
     
     def predict(self, features: np.ndarray) -> Tuple[str, float, float]:
         """
@@ -198,6 +321,11 @@ class InferenceEngine:
             features = features.astype(np.float32)
         
         # =====================================================================
+        # PREPROCESSING (match training pipeline)
+        # =====================================================================
+        features = self._apply_preprocessing(features)
+        
+        # =====================================================================
         # ONNX INFERENCE
         # =====================================================================
         # Run inference - returns [labels, probabilities]
@@ -237,6 +365,9 @@ class InferenceEngine:
         # Ensure correct dtype
         if features.dtype != np.float32:
             features = features.astype(np.float32)
+        
+        # Apply preprocessing (same transforms as training)
+        features = self._apply_preprocessing(features)
         
         # Run batched inference
         outputs = self.session.run(None, {self.input_name: features})

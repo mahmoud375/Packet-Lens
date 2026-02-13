@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/gopacket"
@@ -30,6 +31,14 @@ const (
 
 	// ActiveIdleThreshold for active/idle period detection (1 second)
 	ActiveIdleThreshold = 1 * time.Second
+
+	// MaxActiveFlows caps the total number of concurrent flows tracked.
+	// Under a spoofed-IP DDoS attack, each unique 5-tuple creates a new
+	// flow entry. Without this cap, an attacker generating 1M unique
+	// tuples/sec would exhaust memory in seconds.
+	//
+	// At ~400 bytes per Flow struct, 100K flows ≈ 40 MB — acceptable.
+	MaxActiveFlows = 100_000
 )
 
 // Direction represents packet direction in a flow
@@ -97,10 +106,11 @@ type Flow struct {
 	FINSeen     bool
 	RSTSeen     bool
 
-	// Window sizes (first packet only)
+	// Window sizes (first packet of EACH direction, tracked independently)
 	InitFwdWinBytes int64
 	InitBwdWinBytes int64
-	InitWinSet      bool
+	InitFwdWinSet   bool
+	InitBwdWinSet   bool
 
 	// Forward active data packets (packets with payload)
 	FwdActDataPkts int64
@@ -234,14 +244,17 @@ func (f *Flow) Update(
 			f.RSTSeen = true
 		}
 
-		// Initial window sizes (first packet of each direction)
-		if !f.InitWinSet {
-			if direction == Forward {
-				f.InitFwdWinBytes = int64(windowSize)
-			} else {
-				f.InitBwdWinBytes = int64(windowSize)
-			}
-			f.InitWinSet = true
+		// Initial window sizes — tracked independently per direction.
+		// The CIC-IDS model expects init_fwd_win_bytes to be the FIRST
+		// forward packet's window, and init_bwd_win_bytes to be the FIRST
+		// backward packet's window. Using a single boolean would cause the
+		// second direction's window to never be captured.
+		if direction == Forward && !f.InitFwdWinSet {
+			f.InitFwdWinBytes = int64(windowSize)
+			f.InitFwdWinSet = true
+		} else if direction == Backward && !f.InitBwdWinSet {
+			f.InitBwdWinBytes = int64(windowSize)
+			f.InitBwdWinSet = true
 		}
 	}
 }
@@ -399,6 +412,11 @@ type Manager struct {
 	packetCount int64
 	flowCount   int64
 	mu          sync.Mutex
+
+	// activeFlows tracks the current number of entries in the flow map.
+	// Using atomic.Int64 avoids taking the Manager.mu lock on every packet
+	// in the hot path and enables lock-free load-shedding checks.
+	activeFlows atomic.Int64
 }
 
 // NewManager creates a new flow manager.
@@ -508,6 +526,19 @@ func (m *Manager) HandlePacket(packet gopacket.Packet) {
 	flow := flowI.(*Flow)
 
 	if !loaded {
+		// New flow created — check if we've hit the cap.
+		// We check AFTER LoadOrStore to avoid a TOCTOU race: if we checked
+		// before, two goroutines could both pass the check and both store.
+		currentActive := m.activeFlows.Add(1)
+
+		if currentActive > MaxActiveFlows {
+			// Over capacity — shed load by removing the flow we just created.
+			m.flows.Delete(key)
+			m.activeFlows.Add(-1)
+			metrics.FlowsDropped.Inc()
+			return
+		}
+
 		m.mu.Lock()
 		m.flowCount++
 		m.mu.Unlock()
@@ -525,6 +556,7 @@ func (m *Manager) HandlePacket(packet gopacket.Packet) {
 	// Check for immediate flush conditions
 	if flow.ShouldFlush() {
 		m.flows.Delete(key)
+		m.activeFlows.Add(-1)
 		metrics.ActiveFlows.Dec()
 		select {
 		case m.flushChan <- flow:
@@ -555,6 +587,7 @@ func (m *Manager) cleanupRoutine() {
 				flow := value.(*Flow)
 				if flow.IsIdle(now) {
 					m.flows.Delete(key)
+					m.activeFlows.Add(-1)
 					metrics.ActiveFlows.Dec()
 					select {
 					case m.flushChan <- flow:
