@@ -57,3 +57,4 @@ data/processed/X_test.parquet
 .agent/
 sniffer
 cmd
+services/inference/model_store/model.json

@@ -13,6 +13,8 @@ import (
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
+
+	"github.com/mahmoud375/PacketLens/services/sniffer/internal/metrics"
 )
 
 // Constants for flow management
@@ -509,6 +511,7 @@ func (m *Manager) HandlePacket(packet gopacket.Packet) {
 		m.mu.Lock()
 		m.flowCount++
 		m.mu.Unlock()
+		metrics.ActiveFlows.Inc()
 	}
 
 	// Update flow statistics
@@ -517,13 +520,17 @@ func (m *Manager) HandlePacket(packet gopacket.Packet) {
 	m.mu.Lock()
 	m.packetCount++
 	m.mu.Unlock()
+	metrics.PacketsCaptured.Inc()
 
 	// Check for immediate flush conditions
 	if flow.ShouldFlush() {
 		m.flows.Delete(key)
+		metrics.ActiveFlows.Dec()
 		select {
 		case m.flushChan <- flow:
+			metrics.FlowsFlushed.Inc()
 		default:
+			metrics.FlowsDropped.Inc()
 			log.Printf("[FlowManager] Flush channel full, dropping flow: %s", key)
 		}
 	}
@@ -548,10 +555,13 @@ func (m *Manager) cleanupRoutine() {
 				flow := value.(*Flow)
 				if flow.IsIdle(now) {
 					m.flows.Delete(key)
+					metrics.ActiveFlows.Dec()
 					select {
 					case m.flushChan <- flow:
 						flushed++
+						metrics.FlowsFlushed.Inc()
 					default:
+						metrics.FlowsDropped.Inc()
 						log.Printf("[FlowManager] Flush channel full during cleanup")
 					}
 				}

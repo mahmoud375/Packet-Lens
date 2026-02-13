@@ -20,6 +20,7 @@ import (
 
 	"github.com/mahmoud375/PacketLens/services/sniffer/internal/capture"
 	"github.com/mahmoud375/PacketLens/services/sniffer/internal/flow"
+	"github.com/mahmoud375/PacketLens/services/sniffer/internal/metrics"
 	"github.com/mahmoud375/PacketLens/services/sniffer/internal/transport"
 )
 
@@ -70,6 +71,10 @@ func main() {
 	log.Printf("  Interface: %s", *iface)
 	log.Printf("  Server:    %s", *server)
 	log.Printf("  BPF:       %s", *bpf)
+
+	// Start Prometheus metrics server on port 9091
+	metrics.StartServer("9091")
+	log.Println("📊 Prometheus metrics available on :9091/metrics")
 
 	// Create context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())

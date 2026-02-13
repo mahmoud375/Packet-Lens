@@ -35,11 +35,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import traceback
 from typing import AsyncIterator
 
 import grpc
 import numpy as np
+from prometheus_client import (
+    Counter,
+    Gauge,
+    Histogram,
+    start_http_server,
+)
 
 # Import proto stubs (generated from packetlens.proto)
 from .proto import packetlens_pb2, packetlens_pb2_grpc
@@ -49,6 +56,44 @@ from .core import InferenceEngine
 
 # Configure module logger
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# PROMETHEUS METRICS
+# =============================================================================
+# These are module-level singletons, initialized once when the module loads.
+
+# Histogram for inference latency (in seconds)
+# Buckets: 0.5ms, 1ms, 5ms, 10ms, 50ms, 100ms
+INFERENCE_LATENCY = Histogram(
+    "packetlens_inference_latency_seconds",
+    "Inference latency in seconds",
+    buckets=(0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0),
+)
+
+# Counter for verdicts by label and status
+VERDICT_COUNTER = Counter(
+    "packetlens_verdict_total",
+    "Total verdicts by label and status",
+    ["label", "status"],
+)
+
+# Gauge for current throughput (requests per second)
+THROUGHPUT_GAUGE = Gauge(
+    "packetlens_requests_per_second",
+    "Current inference throughput (requests/second)",
+)
+
+# Counter for total requests processed
+REQUESTS_TOTAL = Counter(
+    "packetlens_requests_total",
+    "Total inference requests processed",
+)
+
+# Gauge for active streams
+ACTIVE_STREAMS = Gauge(
+    "packetlens_active_streams",
+    "Number of active gRPC streams",
+)
 
 
 class InferenceService(packetlens_pb2_grpc.InferenceServiceServicer):
@@ -116,6 +161,10 @@ class InferenceService(packetlens_pb2_grpc.InferenceServiceServicer):
         
         stream_request_count = 0
         stream_error_count = 0
+        stream_start_time = time.time()
+        
+        # Track active stream count for metrics
+        ACTIVE_STREAMS.inc()
         
         try:
             # ================================================================
@@ -143,6 +192,7 @@ class InferenceService(packetlens_pb2_grpc.InferenceServiceServicer):
                             f"got {len(features)}, expected {expected}"
                         )
                         # Yield error verdict and continue
+                        VERDICT_COUNTER.labels(label="ERROR", status="validation_error").inc()
                         yield packetlens_pb2.Verdict(
                             flow_id=request.flow_id,
                             label="ERROR",
@@ -159,9 +209,16 @@ class InferenceService(packetlens_pb2_grpc.InferenceServiceServicer):
                     # a separate thread, preventing event loop starvation.
                     # This is CRITICAL for maintaining responsiveness under
                     # load with CPU-bound ONNX inference.
+                    inference_start = time.perf_counter()
                     label, confidence, inference_time_ms = await asyncio.to_thread(
                         self.engine.predict, features
                     )
+                    inference_elapsed = time.perf_counter() - inference_start
+                    
+                    # Record metrics
+                    INFERENCE_LATENCY.observe(inference_elapsed)
+                    REQUESTS_TOTAL.inc()
+                    VERDICT_COUNTER.labels(label=label, status="success").inc()
                     
                     # Convert ms to µs for proto
                     inference_time_us = int(inference_time_ms * 1000)
@@ -196,6 +253,7 @@ class InferenceService(packetlens_pb2_grpc.InferenceServiceServicer):
                     )
                     
                     # Yield error verdict instead of crashing the stream
+                    VERDICT_COUNTER.labels(label="ERROR", status="exception").inc()
                     yield packetlens_pb2.Verdict(
                         flow_id=request.flow_id,
                         label="ERROR",
@@ -215,6 +273,14 @@ class InferenceService(packetlens_pb2_grpc.InferenceServiceServicer):
             raise
         
         finally:
+            # Decrement active streams
+            ACTIVE_STREAMS.dec()
+            
+            # Update throughput gauge
+            stream_duration = time.time() - stream_start_time
+            if stream_duration > 0:
+                THROUGHPUT_GAUGE.set(stream_request_count / stream_duration)
+            
             # Always log stream completion
             logger.info(
                 f"Classify stream from {peer} closed | "
@@ -256,6 +322,18 @@ async def serve(
         port: Port to listen on (default: 50051)
         max_workers: Max concurrent workers (for thread pool)
     """
+    # =========================================================================
+    # START PROMETHEUS METRICS SERVER
+    # =========================================================================
+    # start_http_server runs in a background daemon thread, so it won't block
+    # the asyncio event loop. Port 8000 is standard for Prometheus metrics.
+    metrics_port = 8000
+    try:
+        start_http_server(metrics_port)
+        logger.info(f"📊 Prometheus metrics server started on port {metrics_port}")
+    except Exception as e:
+        logger.warning(f"Failed to start metrics server on port {metrics_port}: {e}")
+    
     # Create async server
     server = grpc.aio.server(
         options=[
