@@ -1,0 +1,46 @@
+# ==============================================================================
+# PacketLens Docker Build Context Exclusions
+# ==============================================================================
+# Exclude large training data (~1.1GB parquets) that are NOT needed at runtime.
+# Only production artifacts (model.onnx, scaler.pkl, feature_map.json,
+# label_mapping.json) should enter images.
+
+# Training data (NOT needed in production containers)
+data/raw/
+data/processed/X_train.parquet
+data/processed/X_test.parquet
+data/processed/y_train.parquet
+data/processed/y_test.parquet
+data/processed/class_weights.json
+data/processed/feature_columns.pkl
+
+# XGBoost native model (only ONNX is used at runtime)
+services/inference/model_store/model.json
+
+# Git
+.git
+.gitignore
+
+# Notebooks
+Notebooks/
+
+# Python caches
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+
+# Build artifacts
+bin/
+cmd
+sniffer
+
+# IDE / editor
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

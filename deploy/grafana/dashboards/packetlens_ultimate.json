@@ -1,0 +1,73 @@
+{
+  "annotations": { "list": [ { "builtIn": 1, "datasource": { "type": "grafana", "uid": "-- Grafana --" }, "enable": true, "hide": true, "iconColor": "rgba(0, 211, 255, 1)", "name": "Annotations & Alerts", "type": "dashboard" } ] },
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "mappings": [ { "options": { "match": "null", "result": { "text": "SECURE" } }, "type": "special" } ], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] }, "unit": "none" }, "overrides": [] },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false }, "textMode": "auto" },
+      "pluginVersion": "10.0.0",
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "Prometheus" }, "editorMode": "code", "expr": "sum(rate(packetlens_verdict_total{label!=\"Benign\"}[1m]))", "legendFormat": "__auto", "range": true, "refId": "A" } ],
+      "title": "THREAT LEVEL (Attacks/Sec)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "opacity", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "smooth", "lineWidth": 3, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [ { "matcher": { "id": "byName", "options": "Malicious Traffic" }, "properties": [ { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } } ] }, { "matcher": { "id": "byName", "options": "Normal Traffic (Benign)" }, "properties": [ { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } } ] } ] },
+      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 0 },
+      "id": 2,
+      "options": { "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "Prometheus" }, "editorMode": "code", "expr": "sum(rate(packetlens_verdict_total{label!=\"Benign\"}[30s]))", "legendFormat": "Malicious Traffic", "refId": "A" }, { "datasource": { "type": "prometheus", "uid": "Prometheus" }, "editorMode": "code", "expr": "sum(rate(packetlens_verdict_total{label=\"Benign\"}[30s]))", "legendFormat": "Normal Traffic (Benign)", "refId": "B" } ],
+      "title": "Live Traffic Analysis",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "#EAB839", "value": 50 }, { "color": "red", "value": 100 } ] } }, "overrides": [] },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 4 },
+      "id": 3,
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "Prometheus" }, "editorMode": "code", "expr": "packetlens_active_flows", "legendFormat": "__auto", "range": true, "refId": "A" } ],
+      "title": "Active Flows (Memory)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "hideFrom": { "legend": false, "tooltip": false, "viz": false } }, "mappings": [] }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 4,
+      "options": { "displayLabels": [ "percent", "name" ], "legend": { "displayMode": "table", "placement": "right", "showLegend": true }, "pieType": "donut", "reduceOptions": { "calcs": [ "lastNotNull" ], "fields": "", "values": false }, "tooltip": { "mode": "single", "sort": "none" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "Prometheus" }, "editorMode": "code", "expr": "sum by (label) (packetlens_verdict_total)", "legendFormat": "{{label}}", "range": true, "refId": "A" } ],
+      "title": "Attack Distribution (Total)",
+      "type": "piechart"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" }, "custom": { "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 0, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } }, "mappings": [], "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] }, "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 5,
+      "options": { "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "single", "sort": "none" } },
+      "targets": [ { "datasource": { "type": "prometheus", "uid": "Prometheus" }, "editorMode": "code", "expr": "rate(packetlens_inference_latency_seconds_sum[1m]) / rate(packetlens_inference_latency_seconds_count[1m])", "legendFormat": "Latency (Avg)", "range": true, "refId": "A" } ],
+      "title": "System Latency (Inference Speed)",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "1s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": [],
+  "templating": { "list": [] },
+  "time": { "from": "now-5m", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "PacketLens Ultimate",
+  "uid": "packetlens-ultimate",
+  "version": 1,
+  "weekStart": ""
+}

@@ -1,8 +1,60 @@
-version: '3.8'
+# ==============================================================================
+# PacketLens NIDS — Zero-Touch Docker Orchestration
+# ==============================================================================
+#
+# USAGE:
+#   cd deploy
+#   sudo docker compose up --build -d
+#
+# This brings up the entire NIDS stack:
+#   - inference:  Python gRPC server with ONNX model  (ports 50051, 8000)
+#   - sniffer:    Go packet capture & flow extraction  (port 9091)
+#   - prometheus: Metrics collection                   (port 9090)
+#   - grafana:    Dashboard & visualization            (port 3000)
+#
+# All services use network_mode: host for:
+#   1. Simplified packet capture (sniffer needs raw socket access)
+#   2. Zero-config inter-service communication via localhost
+#   3. Prometheus scraping without DNS resolution
+#
+# ==============================================================================
 
 services:
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # INFERENCE SERVICE (Python + ONNX)
+  # ──────────────────────────────────────────────────────────────────────────
+  inference:
+    build:
+      context: ..
+      dockerfile: services/inference/Dockerfile
+    container_name: packetlens-inference
+    network_mode: host
+    restart: always
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # SNIFFER SERVICE (Go + libpcap)
+  # ──────────────────────────────────────────────────────────────────────────
+  sniffer:
+    build:
+      context: ..
+      dockerfile: services/sniffer/Dockerfile
+    container_name: packetlens-sniffer
+    network_mode: host
+    restart: always
+    environment:
+      - INTERFACE=${INTERFACE:-wlp2s0}
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    depends_on:
+      - inference
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # PROMETHEUS (Metrics Collection)
+  # ──────────────────────────────────────────────────────────────────────────
   prometheus:
-    image: prom/prometheus:v2.48.0
+    image: prom/prometheus:latest
     container_name: packetlens-prometheus
     network_mode: host
     volumes:
@@ -15,8 +67,11 @@ services:
       - '--web.enable-lifecycle'
     restart: unless-stopped
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # GRAFANA (Dashboard & Visualization)
+  # ──────────────────────────────────────────────────────────────────────────
   grafana:
-    image: grafana/grafana:10.2.2
+    image: grafana/grafana:latest
     container_name: packetlens-grafana
     network_mode: host
     environment:
@@ -27,6 +82,11 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_SERVER_HTTP_PORT=3000
     volumes:
+      # Provisioning: auto-registers Prometheus datasource + dashboard provider
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      # Dashboards: auto-loads the PacketLens Ultimate JSON
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+      # Persistent storage
       - grafana_data:/var/lib/grafana
     restart: unless-stopped
 
