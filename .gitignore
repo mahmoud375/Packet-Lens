@@ -55,6 +55,6 @@ data/processed/X_test.parquet
 # We also keep all .json and .pkl artifacts because the system needs them.
 
 .agent/
-sniffer
-cmd
+/sniffer
+/cmd
 services/inference/model_store/model.json
