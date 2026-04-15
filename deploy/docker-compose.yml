@@ -90,6 +90,25 @@ services:
       - grafana_data:/var/lib/grafana
     restart: unless-stopped
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # POSTGRESQL (Incident Persistence — Phase 1)
+  # ──────────────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: packetlens-postgres
+    network_mode: host
+    environment:
+      POSTGRES_DB: packetlens
+      POSTGRES_USER: packetlens
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-packetlens_secret}
+    volumes:
+      # Auto-run schema DDL on first initialization
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      # Persistent data
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
 volumes:
   prometheus_data:
   grafana_data:
+  postgres_data:
