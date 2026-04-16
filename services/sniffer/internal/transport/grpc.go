@@ -6,6 +6,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +17,8 @@ import (
 
 	pb "github.com/mahmoud375/PacketLens/gen/go/packetlens"
 	"github.com/mahmoud375/PacketLens/services/sniffer/internal/flow"
+	"github.com/mahmoud375/PacketLens/services/sniffer/internal/incident"
+	"github.com/mahmoud375/PacketLens/services/sniffer/internal/metrics"
 )
 
 // Client wraps the gRPC connection to the inference service.
@@ -126,6 +131,10 @@ type Sender struct {
 	flowChan <-chan *flow.Flow
 	wg       sync.WaitGroup
 
+	// Phase 1: Incident persistence
+	incidentChan chan<- incident.Incident // nil if persistence is disabled
+	incidentCfg  incident.Config
+
 	// Statistics
 	sentCount  int64
 	errorCount int64
@@ -133,10 +142,13 @@ type Sender struct {
 }
 
 // NewSender creates a new sender that reads from the flow channel.
-func NewSender(client *Client, flowChan <-chan *flow.Flow) *Sender {
+// incidentChan may be nil if incident persistence is not configured.
+func NewSender(client *Client, flowChan <-chan *flow.Flow, incidentChan chan<- incident.Incident, incidentCfg incident.Config) *Sender {
 	return &Sender{
-		client:   client,
-		flowChan: flowChan,
+		client:       client,
+		flowChan:     flowChan,
+		incidentChan: incidentChan,
+		incidentCfg:  incidentCfg,
 	}
 }
 
@@ -211,7 +223,10 @@ func (s *Sender) receiveLoop(ctx context.Context) {
 			return
 		}
 
-		// Log verdicts for non-benign traffic or periodically
+		// Track verdict label in Prometheus
+		metrics.VerdictsByLabel.WithLabelValues(verdict.Label).Inc()
+
+		// Log verdicts for non-benign traffic
 		if verdict.Label != "Benign" {
 			log.Printf("[ALERT] Flow %s classified as %s (%.2f%% confidence, %dµs)",
 				verdict.FlowId,
@@ -219,7 +234,95 @@ func (s *Sender) receiveLoop(ctx context.Context) {
 				verdict.Confidence*100,
 				verdict.InferenceTimeUs)
 		}
+
+		// ─── Phase 1: Async incident logging ────────────────────────
+		// Only log if: (a) persistence is enabled, and (b) the verdict
+		// passes the confidence floor + label exclusion filter.
+		if s.incidentChan != nil && s.incidentCfg.ShouldLog(verdict.Label, verdict.Confidence) {
+			srcIP, dstIP, srcPort, dstPort, protocol, parseErr := parseFlowID(verdict.FlowId)
+			if parseErr != nil {
+				log.Printf("[Sender] Failed to parse flow ID for incident: %v", parseErr)
+			} else {
+				inc := incident.Incident{
+					DetectedAt:  time.Now(),
+					SrcIP:       srcIP,
+					DstIP:       dstIP,
+					SrcPort:     srcPort,
+					DstPort:     dstPort,
+					Protocol:    protocol,
+					AttackType:  verdict.Label,
+					Confidence:  verdict.Confidence,
+					InferenceUs: verdict.InferenceTimeUs,
+					FlowID:      verdict.FlowId,
+					Status:      incident.StatusOpen,
+				}
+
+				// Non-blocking send: if the writer can't keep up, drop
+				// the incident and count the loss in Prometheus.
+				select {
+				case s.incidentChan <- inc:
+				default:
+					metrics.IncidentsDropped.Inc()
+				}
+			}
+		}
 	}
+}
+
+// parseFlowID extracts the 5-tuple from a FlowKey.String() representation.
+// Format: "srcIP:srcPort→dstIP:dstPort/protocol"
+// Example: "192.168.1.1:443→10.0.0.5:12345/6"
+func parseFlowID(flowID string) (srcIP net.IP, dstIP net.IP, srcPort uint16, dstPort uint16, protocol uint8, err error) {
+	// Split on "→" (U+2192) to separate src and dst+proto parts
+	srcPart, dstProto, found := strings.Cut(flowID, "→")
+	if !found {
+		return nil, nil, 0, 0, 0, fmt.Errorf("missing → separator in flow ID: %s", flowID)
+	}
+
+	// Split dst+proto on "/" to extract protocol number
+	dstPart, protoStr, found := strings.Cut(dstProto, "/")
+	if !found {
+		return nil, nil, 0, 0, 0, fmt.Errorf("missing / separator in flow ID: %s", flowID)
+	}
+
+	proto, parseErr := strconv.ParseUint(protoStr, 10, 8)
+	if parseErr != nil {
+		return nil, nil, 0, 0, 0, fmt.Errorf("invalid protocol in flow ID: %w", parseErr)
+	}
+
+	// Parse src: split on last ":" to handle IPv6 addresses correctly
+	lastColon := strings.LastIndex(srcPart, ":")
+	if lastColon < 0 {
+		return nil, nil, 0, 0, 0, fmt.Errorf("missing port separator in src: %s", srcPart)
+	}
+	srcIPStr := srcPart[:lastColon]
+	srcPortVal, parseErr := strconv.ParseUint(srcPart[lastColon+1:], 10, 16)
+	if parseErr != nil {
+		return nil, nil, 0, 0, 0, fmt.Errorf("invalid src port: %w", parseErr)
+	}
+
+	// Parse dst: split on last ":" to handle IPv6 addresses correctly
+	lastColon = strings.LastIndex(dstPart, ":")
+	if lastColon < 0 {
+		return nil, nil, 0, 0, 0, fmt.Errorf("missing port separator in dst: %s", dstPart)
+	}
+	dstIPStr := dstPart[:lastColon]
+	dstPortVal, parseErr := strconv.ParseUint(dstPart[lastColon+1:], 10, 16)
+	if parseErr != nil {
+		return nil, nil, 0, 0, 0, fmt.Errorf("invalid dst port: %w", parseErr)
+	}
+
+	srcIP = net.ParseIP(srcIPStr)
+	if srcIP == nil {
+		return nil, nil, 0, 0, 0, fmt.Errorf("invalid src IP: %s", srcIPStr)
+	}
+
+	dstIP = net.ParseIP(dstIPStr)
+	if dstIP == nil {
+		return nil, nil, 0, 0, 0, fmt.Errorf("invalid dst IP: %s", dstIPStr)
+	}
+
+	return srcIP, dstIP, uint16(srcPortVal), uint16(dstPortVal), uint8(proto), nil
 }
 
 // Wait blocks until both loops complete.

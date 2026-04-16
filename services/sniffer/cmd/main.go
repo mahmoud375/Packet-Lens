@@ -20,6 +20,7 @@ import (
 
 	"github.com/mahmoud375/PacketLens/services/sniffer/internal/capture"
 	"github.com/mahmoud375/PacketLens/services/sniffer/internal/flow"
+	"github.com/mahmoud375/PacketLens/services/sniffer/internal/incident"
 	"github.com/mahmoud375/PacketLens/services/sniffer/internal/metrics"
 	"github.com/mahmoud375/PacketLens/services/sniffer/internal/transport"
 )
@@ -103,8 +104,32 @@ func main() {
 	}
 	defer grpcClient.Close()
 
+	// ─── Phase 1: Incident Persistence Layer ─────────────────────────────
+	incidentCfg := incident.DefaultConfig()
+	incidentCfg.PostgresDSN = os.Getenv("POSTGRES_DSN")
+
+	var incidentStore *incident.Store
+	var incidentChan chan incident.Incident
+	var incidentWriter *incident.Writer
+
+	if incidentCfg.PostgresDSN != "" {
+		var storeErr error
+		incidentStore, storeErr = incident.NewStore(ctx, incidentCfg)
+		if storeErr != nil {
+			log.Printf("[WARNING] Incident store unavailable: %v (continuing without persistence)", storeErr)
+		} else {
+			defer incidentStore.Close()
+			incidentChan = make(chan incident.Incident, incidentCfg.ChannelSize)
+			incidentWriter = incident.NewWriter(incidentStore, incidentChan)
+			incidentWriter.Start(ctx)
+			log.Println("📝 Incident persistence enabled (PostgreSQL)")
+		}
+	} else {
+		log.Println("[INFO] POSTGRES_DSN not set — incident persistence disabled")
+	}
+
 	// Start gRPC sender
-	sender := transport.NewSender(grpcClient, flushChan)
+	sender := transport.NewSender(grpcClient, flushChan, incidentChan, incidentCfg)
 	sender.Start(ctx)
 
 	// Initialize capture engine
@@ -126,6 +151,12 @@ func main() {
 	log.Println("Shutting down...")
 	flowManager.Stop()
 	sender.Wait()
+
+	// Wait for the incident writer to flush its final batch
+	if incidentWriter != nil {
+		incidentWriter.Wait()
+		log.Println("📝 Incident writer shut down cleanly")
+	}
 
 	// Print final statistics
 	pkts, flows := flowManager.Stats()

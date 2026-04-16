@@ -53,6 +53,31 @@ var (
 		Help:      "Verdicts received by label",
 	}, []string{"label"})
 
+	// ──────────────────────────────────────────────────────────────
+	// Phase 1: Incident Persistence Metrics
+	// ──────────────────────────────────────────────────────────────
+
+	// IncidentsWritten tracks total incidents successfully persisted to PostgreSQL.
+	IncidentsWritten = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "packetlens",
+		Name:      "incidents_written_total",
+		Help:      "Total number of incidents successfully written to PostgreSQL",
+	})
+
+	// IncidentsDropped tracks incidents dropped due to full channel (non-blocking send).
+	IncidentsDropped = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "packetlens",
+		Name:      "incidents_dropped_total",
+		Help:      "Total number of incidents dropped because the writer channel was full",
+	})
+
+	// IncidentWriteErrors tracks PostgreSQL batch write failures.
+	IncidentWriteErrors = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "packetlens",
+		Name:      "incident_write_errors_total",
+		Help:      "Total number of PostgreSQL batch write failures",
+	})
+
 	once sync.Once
 )
 

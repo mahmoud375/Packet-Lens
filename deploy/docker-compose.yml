@@ -44,11 +44,13 @@ services:
     restart: always
     environment:
       - INTERFACE=${INTERFACE:-wlp2s0}
+      - POSTGRES_DSN=postgres://packetlens_v2:supersecret@localhost:5433/packetlens_v2?sslmode=disable
     cap_add:
       - NET_ADMIN
       - NET_RAW
     depends_on:
       - inference
+      - postgres
 
   # ──────────────────────────────────────────────────────────────────────────
   # PROMETHEUS (Metrics Collection)
@@ -97,15 +99,24 @@ services:
     image: postgres:16-alpine
     container_name: packetlens-postgres
     network_mode: host
+    # Run on port 5433 to avoid conflict with host PostgreSQL on 5432
+    command: postgres -c port=5433
     environment:
-      POSTGRES_DB: packetlens
-      POSTGRES_USER: packetlens
-      POSTGRES_PASSWORD: ${PG_PASSWORD:-packetlens_secret}
+      POSTGRES_DB: packetlens_v2
+      POSTGRES_USER: packetlens_v2
+      POSTGRES_PASSWORD: supersecret
+      # Trust auth as dev safety net (bypasses SASL issues)
+      POSTGRES_HOST_AUTH_METHOD: trust
     volumes:
       # Auto-run schema DDL on first initialization
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
       # Persistent data
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U packetlens_v2 -d packetlens_v2 -p 5433"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
 
 volumes:
