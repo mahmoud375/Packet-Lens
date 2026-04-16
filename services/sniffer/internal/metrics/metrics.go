@@ -78,6 +78,38 @@ var (
 		Help:      "Total number of PostgreSQL batch write failures",
 	})
 
+	// ──────────────────────────────────────────────────────────────
+	// Phase 2: Alerting Metrics
+	// ──────────────────────────────────────────────────────────────
+
+	// AlertsSent tracks total alerts successfully delivered to webhook.
+	AlertsSent = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "packetlens",
+		Name:      "alerts_sent_total",
+		Help:      "Total number of alerts successfully sent to the webhook",
+	})
+
+	// AlertsSuppressed tracks alerts suppressed by the rate limiter.
+	AlertsSuppressed = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "packetlens",
+		Name:      "alerts_suppressed_total",
+		Help:      "Total number of alerts suppressed by per-label cooldown or global burst ceiling",
+	})
+
+	// AlertSendErrors tracks webhook delivery failures (HTTP errors, timeouts).
+	AlertSendErrors = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "packetlens",
+		Name:      "alert_send_errors_total",
+		Help:      "Total number of webhook delivery failures",
+	})
+
+	// AlertsDropped tracks alerts dropped due to full channel (non-blocking send).
+	AlertsDropped = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "packetlens",
+		Name:      "alerts_dropped_total",
+		Help:      "Total number of alerts dropped because the dispatcher channel was full",
+	})
+
 	once sync.Once
 )
 

@@ -45,6 +45,11 @@ services:
     environment:
       - INTERFACE=${INTERFACE:-wlp2s0}
       - POSTGRES_DSN=postgres://packetlens_v2:supersecret@localhost:5433/packetlens_v2?sslmode=disable
+      # Phase 2: Alerting — uncomment and set your webhook URL to enable
+      # Supported types: "generic", "slack", "telegram"
+      - ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL:-}
+      - ALERT_WEBHOOK_TYPE=${ALERT_WEBHOOK_TYPE:-generic}
+      # For Telegram: set ALERT_TELEGRAM_CHAT_ID=your_chat_id
     cap_add:
       - NET_ADMIN
       - NET_RAW

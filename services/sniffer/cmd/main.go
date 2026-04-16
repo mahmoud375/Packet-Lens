@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/mahmoud375/PacketLens/services/sniffer/internal/alerting"
 	"github.com/mahmoud375/PacketLens/services/sniffer/internal/capture"
 	"github.com/mahmoud375/PacketLens/services/sniffer/internal/flow"
 	"github.com/mahmoud375/PacketLens/services/sniffer/internal/incident"
@@ -128,8 +129,30 @@ func main() {
 		log.Println("[INFO] POSTGRES_DSN not set — incident persistence disabled")
 	}
 
+	// ─── Phase 2: Alerting Subsystem ───────────────────────────────────
+	alertCfg := alerting.DefaultConfig()
+	alertCfg.WebhookURL = os.Getenv("ALERT_WEBHOOK_URL")
+	alertCfg.WebhookType = os.Getenv("ALERT_WEBHOOK_TYPE")
+	alertCfg.TelegramChatID = os.Getenv("ALERT_TELEGRAM_CHAT_ID")
+
+	if alertCfg.WebhookType == "" {
+		alertCfg.WebhookType = "generic"
+	}
+
+	var alertChan chan alerting.Alert
+	var alertDispatcher *alerting.Dispatcher
+
+	if alertCfg.WebhookURL != "" {
+		alertChan = make(chan alerting.Alert, alertCfg.ChannelSize)
+		alertDispatcher = alerting.NewDispatcher(alertChan, alertCfg)
+		alertDispatcher.Start(ctx)
+		log.Printf("🔔 Alerting enabled (type=%s)", alertCfg.WebhookType)
+	} else {
+		log.Println("[INFO] ALERT_WEBHOOK_URL not set — alerting disabled")
+	}
+
 	// Start gRPC sender
-	sender := transport.NewSender(grpcClient, flushChan, incidentChan, incidentCfg)
+	sender := transport.NewSender(grpcClient, flushChan, incidentChan, incidentCfg, alertChan, alertCfg)
 	sender.Start(ctx)
 
 	// Initialize capture engine
@@ -156,6 +179,12 @@ func main() {
 	if incidentWriter != nil {
 		incidentWriter.Wait()
 		log.Println("📝 Incident writer shut down cleanly")
+	}
+
+	// Wait for the alert dispatcher to finish sending
+	if alertDispatcher != nil {
+		alertDispatcher.Wait()
+		log.Println("🔔 Alert dispatcher shut down cleanly")
 	}
 
 	// Print final statistics

@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	pb "github.com/mahmoud375/PacketLens/gen/go/packetlens"
+	"github.com/mahmoud375/PacketLens/services/sniffer/internal/alerting"
 	"github.com/mahmoud375/PacketLens/services/sniffer/internal/flow"
 	"github.com/mahmoud375/PacketLens/services/sniffer/internal/incident"
 	"github.com/mahmoud375/PacketLens/services/sniffer/internal/metrics"
@@ -135,6 +136,10 @@ type Sender struct {
 	incidentChan chan<- incident.Incident // nil if persistence is disabled
 	incidentCfg  incident.Config
 
+	// Phase 2: Alerting
+	alertChan chan<- alerting.Alert // nil if alerting is disabled
+	alertCfg  alerting.Config
+
 	// Statistics
 	sentCount  int64
 	errorCount int64
@@ -143,12 +148,22 @@ type Sender struct {
 
 // NewSender creates a new sender that reads from the flow channel.
 // incidentChan may be nil if incident persistence is not configured.
-func NewSender(client *Client, flowChan <-chan *flow.Flow, incidentChan chan<- incident.Incident, incidentCfg incident.Config) *Sender {
+// alertChan may be nil if alerting is not configured.
+func NewSender(
+	client *Client,
+	flowChan <-chan *flow.Flow,
+	incidentChan chan<- incident.Incident,
+	incidentCfg incident.Config,
+	alertChan chan<- alerting.Alert,
+	alertCfg alerting.Config,
+) *Sender {
 	return &Sender{
 		client:       client,
 		flowChan:     flowChan,
 		incidentChan: incidentChan,
 		incidentCfg:  incidentCfg,
+		alertChan:    alertChan,
+		alertCfg:     alertCfg,
 	}
 }
 
@@ -238,32 +253,69 @@ func (s *Sender) receiveLoop(ctx context.Context) {
 		// ─── Phase 1: Async incident logging ────────────────────────
 		// Only log if: (a) persistence is enabled, and (b) the verdict
 		// passes the confidence floor + label exclusion filter.
-		if s.incidentChan != nil && s.incidentCfg.ShouldLog(verdict.Label, verdict.Confidence) {
-			srcIP, dstIP, srcPort, dstPort, protocol, parseErr := parseFlowID(verdict.FlowId)
-			if parseErr != nil {
-				log.Printf("[Sender] Failed to parse flow ID for incident: %v", parseErr)
-			} else {
-				inc := incident.Incident{
-					DetectedAt:  time.Now(),
-					SrcIP:       srcIP,
-					DstIP:       dstIP,
-					SrcPort:     srcPort,
-					DstPort:     dstPort,
-					Protocol:    protocol,
-					AttackType:  verdict.Label,
-					Confidence:  verdict.Confidence,
-					InferenceUs: verdict.InferenceTimeUs,
-					FlowID:      verdict.FlowId,
-					Status:      incident.StatusOpen,
-				}
+		var srcIP, dstIP net.IP
+		var srcPort, dstPort uint16
+		var protocol uint8
+		var parsed bool
 
-				// Non-blocking send: if the writer can't keep up, drop
-				// the incident and count the loss in Prometheus.
-				select {
-				case s.incidentChan <- inc:
-				default:
-					metrics.IncidentsDropped.Inc()
-				}
+		needsParse := (s.incidentChan != nil && s.incidentCfg.ShouldLog(verdict.Label, verdict.Confidence)) ||
+			(s.alertChan != nil && s.alertCfg.ShouldAlert(verdict.Label, verdict.Confidence))
+
+		if needsParse {
+			var parseErr error
+			srcIP, dstIP, srcPort, dstPort, protocol, parseErr = parseFlowID(verdict.FlowId)
+			if parseErr != nil {
+				log.Printf("[Sender] Failed to parse flow ID: %v", parseErr)
+			} else {
+				parsed = true
+			}
+		}
+
+		// Phase 1: Incident persistence (non-blocking)
+		if s.incidentChan != nil && s.incidentCfg.ShouldLog(verdict.Label, verdict.Confidence) && parsed {
+			inc := incident.Incident{
+				DetectedAt:  time.Now(),
+				SrcIP:       srcIP,
+				DstIP:       dstIP,
+				SrcPort:     srcPort,
+				DstPort:     dstPort,
+				Protocol:    protocol,
+				AttackType:  verdict.Label,
+				Confidence:  verdict.Confidence,
+				InferenceUs: verdict.InferenceTimeUs,
+				FlowID:      verdict.FlowId,
+				Status:      incident.StatusOpen,
+			}
+
+			// Non-blocking send: if the writer can't keep up, drop
+			// the incident and count the loss in Prometheus.
+			select {
+			case s.incidentChan <- inc:
+			default:
+				metrics.IncidentsDropped.Inc()
+			}
+		}
+
+		// ─── Phase 2: Async alert dispatch ─────────────────────────
+		if s.alertChan != nil && s.alertCfg.ShouldAlert(verdict.Label, verdict.Confidence) && parsed {
+			alrt := alerting.Alert{
+				DetectedAt:  time.Now(),
+				SrcIP:       srcIP,
+				DstIP:       dstIP,
+				SrcPort:     srcPort,
+				DstPort:     dstPort,
+				Protocol:    protocol,
+				AttackType:  verdict.Label,
+				Confidence:  verdict.Confidence,
+				InferenceUs: verdict.InferenceTimeUs,
+				FlowID:      verdict.FlowId,
+			}
+
+			// Non-blocking send: if the dispatcher can't keep up, drop.
+			select {
+			case s.alertChan <- alrt:
+			default:
+				metrics.AlertsDropped.Inc()
 			}
 		}
 	}
