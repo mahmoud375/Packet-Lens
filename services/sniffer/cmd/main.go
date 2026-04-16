@@ -147,6 +147,8 @@ func main() {
 		alertDispatcher = alerting.NewDispatcher(alertChan, alertCfg)
 		alertDispatcher.Start(ctx)
 		log.Printf("🔔 Alerting enabled (type=%s)", alertCfg.WebhookType)
+		log.Printf("[DEBUG] Telegram Config: ChatID=%q, URL length=%d",
+			alertCfg.TelegramChatID, len(alertCfg.WebhookURL))
 	} else {
 		log.Println("[INFO] ALERT_WEBHOOK_URL not set — alerting disabled")
 	}

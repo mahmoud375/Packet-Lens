@@ -49,7 +49,7 @@ services:
       # Supported types: "generic", "slack", "telegram"
       - ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL:-}
       - ALERT_WEBHOOK_TYPE=${ALERT_WEBHOOK_TYPE:-generic}
-      # For Telegram: set ALERT_TELEGRAM_CHAT_ID=your_chat_id
+      - ALERT_TELEGRAM_CHAT_ID=${ALERT_TELEGRAM_CHAT_ID:-}
     cap_add:
       - NET_ADMIN
       - NET_RAW

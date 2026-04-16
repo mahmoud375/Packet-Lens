@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -120,7 +122,10 @@ func (d *Dispatcher) sendWebhook(alert Alert) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("webhook returned HTTP %d", resp.StatusCode)
+		// Read the response body for debugging — Telegram returns a JSON
+		// error description that is critical for diagnosing failures.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("webhook returned HTTP %d: %s", resp.StatusCode, string(body))
 	}
 
 	return nil
@@ -157,6 +162,7 @@ func (d *Dispatcher) formatSlack(alert Alert) ([]byte, error) {
 }
 
 // formatTelegram builds a Telegram Bot API sendMessage payload with HTML.
+// chat_id is sent as an integer (Telegram requires this for numeric IDs).
 func (d *Dispatcher) formatTelegram(alert Alert) ([]byte, error) {
 	text := fmt.Sprintf(
 		"🚨 <b>PacketLens Alert: %s</b>\n\n"+
@@ -175,8 +181,17 @@ func (d *Dispatcher) formatTelegram(alert Alert) ([]byte, error) {
 		alert.DetectedAt.Format(time.RFC3339),
 	)
 
+	// Telegram API requires chat_id as a number for numeric IDs.
+	// Parse from string config; fall back to string if not numeric (e.g. @channel).
+	var chatID interface{}
+	if id, err := strconv.ParseInt(d.cfg.TelegramChatID, 10, 64); err == nil {
+		chatID = id
+	} else {
+		chatID = d.cfg.TelegramChatID // @username-style channel
+	}
+
 	payload := map[string]interface{}{
-		"chat_id":    d.cfg.TelegramChatID,
+		"chat_id":    chatID,
 		"text":       text,
 		"parse_mode": "HTML",
 	}

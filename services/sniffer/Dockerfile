@@ -38,7 +38,7 @@ FROM debian:bookworm-slim
 
 # libpcap0.8 provides the shared library needed at runtime
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends libpcap0.8 && \
+    apt-get install -y --no-install-recommends libpcap0.8 ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
