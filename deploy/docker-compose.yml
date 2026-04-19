@@ -124,6 +124,23 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # REST API SERVICE (Go + Gin) — Phase 4
+  # ──────────────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ..
+      dockerfile: services/api/Dockerfile
+    container_name: packetlens-api
+    network_mode: host
+    restart: always
+    environment:
+      - POSTGRES_DSN=postgres://packetlens_v2:supersecret@localhost:5433/packetlens_v2?sslmode=disable
+      - API_PORT=8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   prometheus_data:
   grafana_data:
