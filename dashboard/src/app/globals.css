@@ -1,0 +1,130 @@
+@import "tailwindcss";
+
+/* ── PacketLens Dark Theme ───────────────────────────────────────────── */
+
+@theme inline {
+  --color-background: #060a13;
+  --color-foreground: #e2e8f0;
+  --color-surface: #0c1322;
+  --color-surface-hover: #111b2e;
+  --color-border: #1a2744;
+  --color-border-bright: #1e3a5f;
+  --color-muted: #64748b;
+
+  --color-cyan: #22d3ee;
+  --color-cyan-dim: #0e7490;
+  --color-cyan-glow: rgba(34, 211, 238, 0.15);
+
+  --color-red: #ef4444;
+  --color-red-dim: #991b1b;
+  --color-red-glow: rgba(239, 68, 68, 0.12);
+
+  --color-amber: #f59e0b;
+  --color-green: #10b981;
+  --color-purple: #8b5cf6;
+  --color-blue: #3b82f6;
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+/* ── Base ────────────────────────────────────────────────────────────── */
+
+body {
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans), system-ui, sans-serif;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-surface);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-bright);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-cyan-dim);
+}
+
+/* ── Glow Utilities ──────────────────────────────────────────────────── */
+
+.glow-cyan {
+  box-shadow: 0 0 20px rgba(34, 211, 238, 0.08), 0 0 60px rgba(34, 211, 238, 0.04);
+}
+
+.glow-red {
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.08), 0 0 60px rgba(239, 68, 68, 0.04);
+}
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.card:hover {
+  border-color: var(--color-border-bright);
+}
+
+/* ── Stat Card Accents ───────────────────────────────────────────────── */
+
+.stat-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.stat-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent-color, var(--color-cyan)), transparent);
+  opacity: 0.6;
+}
+
+/* ── Table ────────────────────────────────────────────────────────────── */
+
+.incident-row {
+  transition: background-color 0.15s ease;
+}
+
+.incident-row:hover {
+  background-color: var(--color-surface-hover);
+}
+
+/* ── Pulse Animation ─────────────────────────────────────────────────── */
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+/* ── Recharts Overrides ──────────────────────────────────────────────── */
+
+.recharts-cartesian-grid-horizontal line,
+.recharts-cartesian-grid-vertical line {
+  stroke: var(--color-border) !important;
+  stroke-opacity: 0.5;
+}
+
+.recharts-text {
+  fill: var(--color-muted) !important;
+  font-size: 11px;
+}
