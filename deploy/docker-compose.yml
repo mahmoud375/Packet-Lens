@@ -1,25 +1,60 @@
 # ==============================================================================
-# PacketLens NIDS — Zero-Touch Docker Orchestration
+# PacketLens NIPS v2.0 — Unified Docker Orchestration
 # ==============================================================================
 #
 # USAGE:
 #   cd deploy
+#   cp .env.example .env    # first time only — edit values as needed
 #   sudo docker compose up --build -d
 #
-# This brings up the entire NIDS stack:
-#   - inference:  Python gRPC server with ONNX model  (ports 50051, 8000)
-#   - sniffer:    Go packet capture & flow extraction  (port 9091)
-#   - prometheus: Metrics collection                   (port 9090)
-#   - grafana:    Dashboard & visualization            (port 3000)
+# This brings up the complete NIPS stack:
+#   - postgres:    Incident persistence               (port ${POSTGRES_PORT})
+#   - inference:   Python gRPC server with ONNX model  (ports 50051, 8000)
+#   - sniffer:     Go packet capture & flow extraction  (port 9091)
+#   - api:         Go REST API for dashboard            (port ${API_PORT})
+#   - dashboard:   Next.js real-time security UI        (port ${DASHBOARD_PORT})
+#   - prometheus:  Metrics collection                   (port 9090)
+#   - grafana:     Grafana dashboard & visualization    (port 3000)
 #
 # All services use network_mode: host for:
 #   1. Simplified packet capture (sniffer needs raw socket access)
 #   2. Zero-config inter-service communication via localhost
 #   3. Prometheus scraping without DNS resolution
 #
+# All secrets and configuration are sourced from .env (see .env.example).
 # ==============================================================================
 
 services:
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # POSTGRESQL (Incident Persistence)
+  # ──────────────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: packetlens-postgres
+    network_mode: host
+    # Run on configurable port to avoid conflict with host PostgreSQL
+    command: postgres -c port=${POSTGRES_PORT:-5433}
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-packetlens_v2}
+      POSTGRES_USER: ${POSTGRES_USER:-packetlens_v2}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-supersecret}
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      # Auto-run schema DDL on first initialization
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      # Persistent data
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-packetlens_v2} -d ${POSTGRES_DB:-packetlens_v2} -p ${POSTGRES_PORT:-5433}",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
 
   # ──────────────────────────────────────────────────────────────────────────
   # INFERENCE SERVICE (Python + ONNX)
@@ -44,9 +79,8 @@ services:
     restart: always
     environment:
       - INTERFACE=${INTERFACE:-wlp2s0}
-      - POSTGRES_DSN=postgres://packetlens_v2:supersecret@localhost:5433/packetlens_v2?sslmode=disable
-      # Phase 2: Alerting — uncomment and set your webhook URL to enable
-      # Supported types: "generic", "slack", "telegram"
+      - POSTGRES_DSN=postgres://${POSTGRES_USER:-packetlens_v2}:${POSTGRES_PASSWORD:-supersecret}@localhost:${POSTGRES_PORT:-5433}/${POSTGRES_DB:-packetlens_v2}?sslmode=disable
+      # Alerting — set in .env to enable
       - ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL:-}
       - ALERT_WEBHOOK_TYPE=${ALERT_WEBHOOK_TYPE:-generic}
       - ALERT_TELEGRAM_CHAT_ID=${ALERT_TELEGRAM_CHAT_ID:-}
@@ -56,6 +90,47 @@ services:
     depends_on:
       - inference
       - postgres
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # REST API SERVICE (Go + Gin)
+  # ──────────────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ..
+      dockerfile: services/api/Dockerfile
+    container_name: packetlens-api
+    network_mode: host
+    restart: always
+    environment:
+      - POSTGRES_DSN=postgres://${POSTGRES_USER:-packetlens_v2}:${POSTGRES_PASSWORD:-supersecret}@localhost:${POSTGRES_PORT:-5433}/${POSTGRES_DB:-packetlens_v2}?sslmode=disable
+      - API_PORT=${API_PORT:-8080}
+      # Pre-wired for Directive 3 (JWT Auth)
+      - JWT_SECRET=${JWT_SECRET:-change-me-to-a-random-64-char-hex-string}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-packetlens-admin}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # DASHBOARD (Next.js — Standalone Production Build)
+  # ──────────────────────────────────────────────────────────────────────────
+  dashboard:
+    build:
+      context: ../dashboard
+      dockerfile: Dockerfile
+      args:
+        # NEXT_PUBLIC_* vars must be injected at BUILD time (baked into JS bundle)
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080/api/v1}
+    container_name: packetlens-dashboard
+    network_mode: host
+    restart: always
+    environment:
+      # Runtime port for the standalone Node.js server
+      - PORT=${DASHBOARD_PORT:-3001}
+      - HOSTNAME=0.0.0.0
+    depends_on:
+      - api
 
   # ──────────────────────────────────────────────────────────────────────────
   # PROMETHEUS (Metrics Collection)
@@ -68,10 +143,10 @@ services:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=7d'
-      - '--web.enable-lifecycle'
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
     restart: unless-stopped
 
   # ──────────────────────────────────────────────────────────────────────────
@@ -85,8 +160,8 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
       - GF_AUTH_DISABLE_LOGIN_FORM=true
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=${GF_SECURITY_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD:-admin}
       - GF_SERVER_HTTP_PORT=3000
     volumes:
       # Provisioning: auto-registers Prometheus datasource + dashboard provider
@@ -96,50 +171,6 @@ services:
       # Persistent storage
       - grafana_data:/var/lib/grafana
     restart: unless-stopped
-
-  # ──────────────────────────────────────────────────────────────────────────
-  # POSTGRESQL (Incident Persistence — Phase 1)
-  # ──────────────────────────────────────────────────────────────────────────
-  postgres:
-    image: postgres:16-alpine
-    container_name: packetlens-postgres
-    network_mode: host
-    # Run on port 5433 to avoid conflict with host PostgreSQL on 5432
-    command: postgres -c port=5433
-    environment:
-      POSTGRES_DB: packetlens_v2
-      POSTGRES_USER: packetlens_v2
-      POSTGRES_PASSWORD: supersecret
-      # Trust auth as dev safety net (bypasses SASL issues)
-      POSTGRES_HOST_AUTH_METHOD: trust
-    volumes:
-      # Auto-run schema DDL on first initialization
-      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-      # Persistent data
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U packetlens_v2 -d packetlens_v2 -p 5433"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    restart: unless-stopped
-
-  # ──────────────────────────────────────────────────────────────────────────
-  # REST API SERVICE (Go + Gin) — Phase 4
-  # ──────────────────────────────────────────────────────────────────────────
-  api:
-    build:
-      context: ..
-      dockerfile: services/api/Dockerfile
-    container_name: packetlens-api
-    network_mode: host
-    restart: always
-    environment:
-      - POSTGRES_DSN=postgres://packetlens_v2:supersecret@localhost:5433/packetlens_v2?sslmode=disable
-      - API_PORT=8080
-    depends_on:
-      postgres:
-        condition: service_healthy
 
 volumes:
   prometheus_data:

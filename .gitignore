@@ -58,3 +58,10 @@ data/processed/X_test.parquet
 /sniffer
 /cmd
 services/inference/model_store/model.json
+
+# ===========================
+# Deployment Secrets
+# ===========================
+# The actual .env contains passwords and tokens — never commit it.
+# deploy/.env.example is the tracked, documented template.
+deploy/.env

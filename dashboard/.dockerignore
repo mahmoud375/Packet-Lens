@@ -1,0 +1,35 @@
+# ==============================================================================
+# PacketLens Dashboard — Docker Build Context Exclusions
+# ==============================================================================
+# Keep the build context small for faster Docker builds.
+
+# Dependencies (reinstalled in Docker via npm ci)
+node_modules
+.pnp.*
+.yarn/*
+
+# Next.js build output (rebuilt in Docker)
+.next
+out
+
+# Dev / testing
+coverage
+.env*
+!.env.example
+
+# Version control
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Agent / AI config
+AGENTS.md
+CLAUDE.md
