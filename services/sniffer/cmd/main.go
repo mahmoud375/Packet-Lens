@@ -91,8 +91,10 @@ func main() {
 		cancel()
 	}()
 
-	// Create flow flush channel (buffered to prevent blocking)
-	flushChan := make(chan *flow.Flow, 1000)
+	// Create flow flush channel — sized for 100K+ pps DDoS bursts.
+	// At peak, each unique 5-tuple generates a Flow struct (~400 bytes).
+	// 50K entries ≈ 20 MB — acceptable headroom on modern servers.
+	flushChan := make(chan *flow.Flow, 50_000)
 
 	// Initialize flow manager
 	flowManager := flow.NewManager(flushChan)

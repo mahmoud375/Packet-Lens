@@ -16,8 +16,8 @@ type Config struct {
 	PostgresDSN string
 
 	// MaxPoolConns is the maximum number of connections in the pgxpool.
-	// The writer goroutine is single-threaded, so 4 connections is generous.
-	// Default: 4
+	// Under DDoS bursts, parallel COPY batches benefit from more connections.
+	// Default: 8
 	MaxPoolConns int32
 
 	// ──────────────────────────────────────────────────────────────────────
@@ -41,7 +41,7 @@ type Config struct {
 	// BatchSize is the number of incidents accumulated before a batch flush
 	// is triggered. Larger batches improve INSERT throughput but increase
 	// the latency between detection and database visibility.
-	// Default: 50
+	// Default: 500 (tuned for 100K+ pps DDoS absorption)
 	BatchSize int
 
 	// FlushInterval is the maximum time between batch flushes. Even if the
@@ -53,21 +53,21 @@ type Config struct {
 	// ChannelSize is the capacity of the buffered incidentChan. When the
 	// channel is full, new incidents are dropped (non-blocking send) and a
 	// Prometheus counter is incremented.
-	// Default: 5000
+	// Default: 50000 (sized for sustained DDoS bursts)
 	ChannelSize int
 }
 
 // DefaultConfig returns a Config with production-safe defaults.
 func DefaultConfig() Config {
 	return Config{
-		MaxPoolConns:    4,
+		MaxPoolConns:    8,
 		ConfidenceFloor: 0.85,
 		ExcludeLabels: map[string]struct{}{
 			"Benign": {},
 		},
-		BatchSize:     50,
+		BatchSize:     500,
 		FlushInterval: 1 * time.Second,
-		ChannelSize:   5000,
+		ChannelSize:   50_000,
 	}
 }
 

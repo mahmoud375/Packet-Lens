@@ -49,7 +49,7 @@ type Config struct {
 	// ChannelSize is the capacity of the buffered alert channel.
 	// When full, new alerts are dropped (non-blocking) and a Prometheus
 	// counter is incremented.
-	// Default: 1000
+	// Default: 10000 (absorb DDoS-triggered alert storms)
 	ChannelSize int
 
 	// HTTPTimeout is the maximum time allowed for each webhook POST.
@@ -73,7 +73,7 @@ func DefaultConfig() Config {
 		PerLabelCooldown:  60 * time.Second,
 		GlobalBurstLimit:  10,
 		GlobalBurstWindow: 60 * time.Second,
-		ChannelSize:       1000,
+		ChannelSize:       10_000,
 		HTTPTimeout:       5 * time.Second,
 		ConfidenceFloor:   0.90,
 		ExcludeLabels: map[string]struct{}{
