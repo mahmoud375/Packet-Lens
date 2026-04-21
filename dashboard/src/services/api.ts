@@ -8,6 +8,47 @@ const api = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
+// ─── Auth Interceptors ──────────────────────────────────────────────────────
+
+const STORAGE_KEY = "packetlens_auth";
+
+// Request: attach Bearer token automatically
+api.interceptors.request.use((config) => {
+  if (typeof window !== "undefined") {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        const { token } = JSON.parse(stored);
+        if (token) {
+          config.headers.Authorization = `Bearer ${token}`;
+        }
+      }
+    } catch {
+      // Ignore parse errors
+    }
+  }
+  return config;
+});
+
+// Response: handle 401 by logging out
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (
+      error.response?.status === 401 &&
+      typeof window !== "undefined" &&
+      !window.location.pathname.includes("/login")
+    ) {
+      // Token expired or invalid — force logout
+      localStorage.removeItem(STORAGE_KEY);
+      document.cookie =
+        "packetlens_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
+      window.location.href = "/login";
+    }
+    return Promise.reject(error);
+  }
+);
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface Incident {
@@ -89,6 +130,23 @@ export async function fetchIncidents(
     params,
   });
   return data;
+}
+
+// ─── Token Helper ────────────────────────────────────────────────────────────
+
+/** Retrieve the current JWT from localStorage (used by useSSE for query param) */
+export function getAuthToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored) {
+      const { token } = JSON.parse(stored);
+      return token || null;
+    }
+  } catch {
+    // Ignore
+  }
+  return null;
 }
 
 export default api;

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState } from "react";
+import { getAuthToken } from "@/services/api";
 
 export type SSEStatus = "connecting" | "connected" | "disconnected" | "error";
 
@@ -14,9 +15,12 @@ interface UseSSEOptions<T> {
 }
 
 /**
- * Custom hook for Server-Sent Events with auto-reconnection.
+ * Custom hook for Server-Sent Events with JWT auth and auto-reconnection.
  *
- * Uses the native EventSource API which handles reconnection automatically.
+ * Since the native EventSource API does not support custom headers,
+ * the JWT token is appended as a `?token=` query parameter.
+ * The Go API middleware checks this fallback when no Authorization header is present.
+ *
  * Cleans up on unmount to prevent goroutine/memory leaks.
  */
 export function useSSE<T>({
@@ -38,9 +42,19 @@ export function useSSE<T>({
       return;
     }
 
+    // ── Build authenticated URL ──────────────────────────────────
+    const token = getAuthToken();
+    if (!token) {
+      setStatus("error");
+      return;
+    }
+
+    const separator = url.includes("?") ? "&" : "?";
+    const authedUrl = `${url}${separator}token=${encodeURIComponent(token)}`;
+
     setStatus("connecting");
 
-    const es = new EventSource(url);
+    const es = new EventSource(authedUrl);
 
     // ── Connected ────────────────────────────────────────────────
     es.addEventListener("connected", () => {
@@ -63,8 +77,6 @@ export function useSSE<T>({
     };
 
     // ── Error / auto-reconnect ───────────────────────────────────
-    // EventSource automatically reconnects on error.
-    // We set status to "error" while it's reconnecting.
     es.onerror = () => {
       if (es.readyState === EventSource.CONNECTING) {
         setStatus("connecting");
