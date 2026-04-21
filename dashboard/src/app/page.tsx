@@ -8,6 +8,7 @@ import TimelineChart from "@/components/TimelineChart";
 import AttackPieChart from "@/components/AttackPieChart";
 import ProtocolBar from "@/components/ProtocolBar";
 import IncidentTable from "@/components/IncidentTable";
+import { useSSE } from "@/hooks/useSSE";
 import {
   fetchSummary,
   fetchIncidents,
@@ -15,23 +16,32 @@ import {
   type Incident,
 } from "@/services/api";
 
-const POLL_INTERVAL = 5_000; // 5 seconds
+/** Maximum number of incidents to keep in client-side state */
+const MAX_INCIDENTS = 200;
+
+/** SSE endpoint URL */
+const SSE_URL =
+  (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080/api/v1") +
+  "/incidents/stream";
 
 export default function DashboardPage() {
   const [summary, setSummary] = useState<SummaryResponse | null>(null);
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [newCount, setNewCount] = useState(0);
 
+  // ── Initial Data Load (ONE-TIME) ────────────────────────────────
   const loadData = useCallback(async () => {
     try {
       const [summaryData, incidentData] = await Promise.all([
         fetchSummary(),
-        fetchIncidents({ limit: 20 }),
+        fetchIncidents({ limit: 50 }),
       ]);
       setSummary(summaryData);
       setIncidents(incidentData.data ?? []);
       setError(null);
+      setNewCount(0);
     } catch (err) {
       console.error("Dashboard fetch error:", err);
       setError("Failed to connect to API");
@@ -40,12 +50,39 @@ export default function DashboardPage() {
     }
   }, []);
 
-  // Initial load + polling
   useEffect(() => {
     loadData();
-    const timer = setInterval(loadData, POLL_INTERVAL);
-    return () => clearInterval(timer);
   }, [loadData]);
+
+  // ── SSE: Live Incident Stream ───────────────────────────────────
+  const handleNewIncident = useCallback((incident: Incident) => {
+    setIncidents((prev) => {
+      // Prepend new incident, cap at MAX_INCIDENTS to prevent memory leak
+      const updated = [incident, ...prev];
+      return updated.length > MAX_INCIDENTS
+        ? updated.slice(0, MAX_INCIDENTS)
+        : updated;
+    });
+    setNewCount((c) => c + 1);
+  }, []);
+
+  const sseStatus = useSSE<Incident>({
+    url: SSE_URL,
+    event: "incident",
+    onMessage: handleNewIncident,
+    enabled: !loading,
+  });
+
+  // ── Manual Refresh (re-fetch summary from materialized views) ───
+  const handleRefresh = useCallback(async () => {
+    try {
+      const summaryData = await fetchSummary();
+      setSummary(summaryData);
+      setNewCount(0);
+    } catch (err) {
+      console.error("Refresh error:", err);
+    }
+  }, []);
 
   return (
     <div className="flex w-full min-h-screen bg-background">
@@ -58,7 +95,49 @@ export default function DashboardPage() {
           {/* Error Banner */}
           {error && (
             <div className="rounded-lg border border-red/30 bg-red/10 px-4 py-3 text-sm text-red">
-              ⚠ {error} — Retrying every {POLL_INTERVAL / 1000}s...
+              ⚠ {error}
+            </div>
+          )}
+
+          {/* SSE Status + Refresh Bar */}
+          {!loading && (
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                {/* SSE connection indicator */}
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      sseStatus === "connected"
+                        ? "bg-green pulse-dot"
+                        : sseStatus === "connecting"
+                          ? "bg-amber animate-pulse"
+                          : "bg-red"
+                    }`}
+                  />
+                  <span className="text-xs font-mono text-muted uppercase tracking-wider">
+                    {sseStatus === "connected"
+                      ? "Live"
+                      : sseStatus === "connecting"
+                        ? "Connecting…"
+                        : "Disconnected"}
+                  </span>
+                </div>
+
+                {/* New incidents badge */}
+                {newCount > 0 && (
+                  <span className="text-xs font-mono text-cyan bg-cyan/10 border border-cyan/20 px-2 py-0.5 rounded-full">
+                    +{newCount} new
+                  </span>
+                )}
+              </div>
+
+              {/* Manual refresh button */}
+              <button
+                onClick={handleRefresh}
+                className="text-xs font-medium text-muted hover:text-foreground bg-surface hover:bg-surface-hover border border-border px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
+              >
+                ↻ Refresh Stats
+              </button>
             </div>
           )}
 

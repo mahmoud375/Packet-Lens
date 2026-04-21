@@ -32,6 +32,7 @@ func Setup(h *handler.Handler) *gin.Engine {
 	{
 		v1.GET("/health", h.HealthCheck)
 		v1.GET("/incidents", h.ListIncidents)
+		v1.GET("/incidents/stream", h.StreamIncidents) // SSE endpoint
 		v1.GET("/stats/summary", h.GetSummary)
 	}
 

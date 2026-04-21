@@ -10,16 +10,18 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/mahmoud375/PacketLens/services/api/internal/notifier"
 )
 
-// Handler holds the database pool and provides HTTP handler methods.
+// Handler holds the database pool and notification hub, and provides HTTP handler methods.
 type Handler struct {
 	pool *pgxpool.Pool
+	hub  *notifier.Hub
 }
 
-// New creates a new Handler with the given database pool.
-func New(pool *pgxpool.Pool) *Handler {
-	return &Handler{pool: pool}
+// New creates a new Handler with the given database pool and notification hub.
+func New(pool *pgxpool.Pool, hub *notifier.Hub) *Handler {
+	return &Handler{pool: pool, hub: hub}
 }
 
 // ─── Response Types ──────────────────────────────────────────────────────────
@@ -180,36 +182,29 @@ func (h *Handler) ListIncidents(c *gin.Context) {
 // ─── GET /api/v1/stats/summary ──────────────────────────────────────────────
 
 // GetSummary returns aggregated statistics for the dashboard.
+// Uses pre-computed materialized views instead of raw GROUP BY queries.
 func (h *Handler) GetSummary(c *gin.Context) {
 	ctx := c.Request.Context()
 	var summary SummaryResponse
 
-	// 1. Total incidents
-	err := h.pool.QueryRow(ctx, `SELECT COUNT(*) FROM incidents`).Scan(&summary.TotalIncidents)
-	if err != nil {
+	// 1. Total incidents (fast — uses index scan)
+	if err := h.pool.QueryRow(ctx, `SELECT COUNT(*) FROM incidents`).Scan(&summary.TotalIncidents); err != nil {
 		log.Printf("[API] Total count error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 		return
 	}
 
-	// 2. Open incidents
-	err = h.pool.QueryRow(ctx, `SELECT COUNT(*) FROM incidents WHERE status = 'open'`).Scan(&summary.OpenIncidents)
-	if err != nil {
+	// 2. Open incidents (fast — uses partial index idx_incidents_open)
+	if err := h.pool.QueryRow(ctx, `SELECT COUNT(*) FROM incidents WHERE status = 'open'`).Scan(&summary.OpenIncidents); err != nil {
 		log.Printf("[API] Open count error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 		return
 	}
 
-	// 3. Top 5 attack types by count + average confidence
-	rows, err := h.pool.Query(ctx, `
-		SELECT attack_type, COUNT(*) as cnt, AVG(confidence)::real as avg_conf
-		FROM incidents
-		GROUP BY attack_type
-		ORDER BY cnt DESC
-		LIMIT 5
-	`)
+	// 3. Top attack types — from materialized view (pre-computed)
+	rows, err := h.pool.Query(ctx, `SELECT attack_type, count, avg_confidence FROM mv_attack_summary LIMIT 5`)
 	if err != nil {
-		log.Printf("[API] Top attack types error: %v", err)
+		log.Printf("[API] mv_attack_summary error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 		return
 	}
@@ -225,16 +220,10 @@ func (h *Handler) GetSummary(c *gin.Context) {
 		summary.TopAttackTypes = append(summary.TopAttackTypes, stat)
 	}
 
-	// 4. Recent timeline: incidents per hour for the last 24 hours
-	timeRows, err := h.pool.Query(ctx, `
-		SELECT date_trunc('hour', detected_at) AS hour, COUNT(*) AS cnt
-		FROM incidents
-		WHERE detected_at >= NOW() - INTERVAL '24 hours'
-		GROUP BY hour
-		ORDER BY hour ASC
-	`)
+	// 4. Hourly timeline — from materialized view (pre-computed)
+	timeRows, err := h.pool.Query(ctx, `SELECT hour, count FROM mv_hourly_timeline ORDER BY hour ASC`)
 	if err != nil {
-		log.Printf("[API] Timeline error: %v", err)
+		log.Printf("[API] mv_hourly_timeline error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 		return
 	}
@@ -250,15 +239,10 @@ func (h *Handler) GetSummary(c *gin.Context) {
 		summary.RecentTimeline = append(summary.RecentTimeline, bucket)
 	}
 
-	// 5. Protocol breakdown
-	protoRows, err := h.pool.Query(ctx, `
-		SELECT protocol, COUNT(*) AS cnt
-		FROM incidents
-		GROUP BY protocol
-		ORDER BY cnt DESC
-	`)
+	// 5. Protocol breakdown — from materialized view (pre-computed)
+	protoRows, err := h.pool.Query(ctx, `SELECT protocol, count FROM mv_protocol_breakdown`)
 	if err != nil {
-		log.Printf("[API] Protocol breakdown error: %v", err)
+		log.Printf("[API] mv_protocol_breakdown error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 		return
 	}

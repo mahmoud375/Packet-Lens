@@ -41,8 +41,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-supersecret}
       POSTGRES_HOST_AUTH_METHOD: trust
     volumes:
-      # Auto-run schema DDL on first initialization
-      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      # Auto-run schema DDL on first initialization (alphabetical order)
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+      - ./postgres/002_materialized_views.sql:/docker-entrypoint-initdb.d/002_views.sql:ro
       # Persistent data
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

@@ -3,6 +3,9 @@
 // This microservice exposes incident data from PostgreSQL to the Next.js
 // frontend. It is a strictly READ-ONLY service with no write capabilities.
 //
+// v2.0: Added materialized view migrations, LISTEN/NOTIFY hub for SSE,
+//       and background view refresh loop.
+//
 // Usage:
 //
 //	POSTGRES_DSN=postgres://... go run ./services/api/cmd
@@ -19,6 +22,7 @@ import (
 
 	"github.com/mahmoud375/PacketLens/services/api/internal/db"
 	"github.com/mahmoud375/PacketLens/services/api/internal/handler"
+	"github.com/mahmoud375/PacketLens/services/api/internal/notifier"
 	"github.com/mahmoud375/PacketLens/services/api/internal/router"
 )
 
@@ -48,8 +52,21 @@ func main() {
 	defer pool.Close()
 	log.Println("📦 Connected to PostgreSQL")
 
+	// ── Migrations (materialized views + NOTIFY trigger) ─────────────
+	if err := notifier.RunMigrations(ctx, pool); err != nil {
+		log.Printf("[WARNING] Migrations incomplete: %v (dashboard may show stale data)", err)
+	}
+
+	// ── Notification Hub ─────────────────────────────────────────────
+	hub := notifier.NewHub(pool)
+	go hub.Listen(ctx)
+	log.Println("📡 LISTEN/NOTIFY hub started")
+
+	// ── Materialized View Refresh Loop ───────────────────────────────
+	go notifier.StartRefreshLoop(ctx, pool, 30*time.Second)
+
 	// ── Handlers ─────────────────────────────────────────────────────
-	h := handler.New(pool)
+	h := handler.New(pool, hub)
 
 	// ── Router ───────────────────────────────────────────────────────
 	r := router.Setup(h)
@@ -59,7 +76,7 @@ func main() {
 		Addr:         ":" + port,
 		Handler:      r,
 		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		WriteTimeout: 0, // Disabled for SSE (long-lived connections)
 		IdleTimeout:  60 * time.Second,
 	}
 
@@ -77,6 +94,8 @@ func main() {
 	<-quit
 
 	log.Println("Shutting down API server...")
+	cancel() // Stop notifier + refresh loop
+
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
