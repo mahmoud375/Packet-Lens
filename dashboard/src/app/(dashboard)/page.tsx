@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import Sidebar from "@/components/Sidebar";
-import TopBar from "@/components/TopBar";
+
 import StatCards from "@/components/StatCards";
 import TimelineChart from "@/components/TimelineChart";
 import AttackPieChart from "@/components/AttackPieChart";
@@ -85,13 +84,7 @@ export default function DashboardPage() {
   }, []);
 
   return (
-    <div className="flex w-full min-h-screen bg-background">
-      <Sidebar />
-
-      <div className="flex-1 flex flex-col min-w-0">
-        <TopBar />
-
-        <main className="flex-1 overflow-y-auto p-6 space-y-6">
+    <>
           {/* Error Banner */}
           {error && (
             <div className="rounded-lg border border-red/30 bg-red/10 px-4 py-3 text-sm text-red">
@@ -175,9 +168,7 @@ export default function DashboardPage() {
               <IncidentTable incidents={incidents} />
             </>
           )}
-        </main>
-      </div>
-    </div>
+    </>
   );
 }
 
