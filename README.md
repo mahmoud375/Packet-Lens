@@ -11,8 +11,7 @@
 [![Next.js](https://img.shields.io/badge/Next.js-16-000000?style=for-the-badge&logo=next.js&logoColor=white)](https://nextjs.org)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?style=for-the-badge&logo=postgresql&logoColor=white)](https://postgresql.org)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://docker.com)
-[![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
-
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 **Real-time packet capture · ML-driven threat classification · Zero-polling SSE dashboard**
 
 [Features](#-key-features) · [Architecture](#-system-architecture) · [Setup](#%EF%B8%8F-setup--installation) · [Performance](#-performance-benchmarks) · [Project Structure](#-project-structure)
@@ -539,7 +538,7 @@ The flow manager caps active flows at **100,000** (`MaxActiveFlows`). Beyond thi
 
 ##  License
 
-This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the **MIT License**. See the [LICENSE](LICENSE.md) file for details.
 
 ---
 
